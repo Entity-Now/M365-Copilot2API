@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"sync"
@@ -156,6 +157,14 @@ func (c *Client) readSSE(body io.ReadCloser) {
 					select {
 					case ch <- json.RawMessage(data):
 					default:
+						// Non-blocking send is correct in the per-request
+						// channel model: each pending channel has capacity 1
+						// and exactly one consumer select-waiting on it. A
+						// full channel therefore means the requester already
+						// timed out and unregistered — blocking here would
+						// stall the SSE reader for a response nobody will
+						// ever read.
+						log.Printf("[mcp] dropping late SSE response for id %d (requester gone or timed out)", *meta.ID)
 					}
 				}
 			}

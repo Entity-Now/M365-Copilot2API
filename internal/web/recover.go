@@ -30,6 +30,9 @@ func (w *streamingWriter) Write(b []byte) (int, error) {
 // chain and stream frame-by-frame; without this the innermost buffered
 // response only flushes when the handler returns (all frames at once).
 func (w *streamingWriter) Flush() {
+	if !w.headerWritten {
+		w.headerWritten = true
+	}
 	if f, ok := w.ResponseWriter.(http.Flusher); ok {
 		f.Flush()
 	}

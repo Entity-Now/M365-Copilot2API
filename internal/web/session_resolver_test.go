@@ -135,6 +135,37 @@ func TestResolverIncrementalBoundary(t *testing.T) {
 	}
 }
 
+func TestConversationRotationBoundary(t *testing.T) {
+	tests := []struct {
+		historyLen int
+		want       bool
+	}{
+		{historyLen: 599, want: false},
+		{historyLen: 600, want: true},
+		{historyLen: 601, want: true},
+	}
+	for _, test := range tests {
+		if got := shouldRotateConversation(test.historyLen, 600); got != test.want {
+			t.Fatalf("history=%d: rotation=%v, want %v", test.historyLen, got, test.want)
+		}
+	}
+}
+
+func TestResolvedConversationRotationUsesRequestLength(t *testing.T) {
+	// Persisted resolver history is capped at 512 messages, so rotation must
+	// also consider the full request length or the default 600-message limit
+	// can never be reached through this path.
+	if !shouldRotateResolvedConversation(512, 600, 600) {
+		t.Fatal("request length at the limit must rotate even when resolver history is truncated")
+	}
+	if shouldRotateResolvedConversation(512, 599, 600) {
+		t.Fatal("request length below the limit must not rotate")
+	}
+	if !shouldRotateResolvedConversation(601, 2, 600) {
+		t.Fatal("resolver history above the limit must rotate")
+	}
+}
+
 func TestResolverEvictsAfterTTL(t *testing.T) {
 	t.Setenv("M365_SESSION_CACHE", filepath.Join(t.TempDir(), "sessions.json"))
 	sr := openSessionResolver()

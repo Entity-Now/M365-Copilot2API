@@ -187,6 +187,19 @@ func TestReasoningEffortRouting(t *testing.T) {
 	if _, err := reasoningTone("gpt-5.6-reasoning", "extreme"); err == nil {
 		t.Fatal("invalid effort accepted")
 	}
+	if _, err := reasoningTone("gpt-99-invented", "low"); err == nil || !strings.Contains(err.Error(), "unknown or unsupported chat model") {
+		t.Fatalf("unknown model error=%v", err)
+	}
+}
+
+func TestChatRejectsUnknownModelBeforeUpstream(t *testing.T) {
+	s := &Server{}
+	r := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"gpt-99-invented","messages":[{"role":"user","content":"hello"}]}`))
+	w := httptest.NewRecorder()
+	s.openaiChat(w, r)
+	if w.Code != 400 || !strings.Contains(w.Body.String(), "unknown or unsupported chat model") {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
 }
 
 func TestChatRejectsInvalidReasoningBeforeUpstream(t *testing.T) {

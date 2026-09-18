@@ -179,6 +179,22 @@ func configuredModelTone(model string, mappings []modelMapping) (string, bool) {
 	return mapping.UpstreamTone, true
 }
 
+func supportedChatModel(model string) bool {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return false
+	}
+	if _, ok := configuredModelTone(model, currentSettings().ModelMappings); ok {
+		return true
+	}
+	for _, spec := range gatewayModels {
+		if spec.Tools && strings.EqualFold(spec.ID, model) {
+			return true
+		}
+	}
+	return false
+}
+
 func configuredModelSpecs(mappings []modelMapping) []modelSpec {
 	models := append([]modelSpec(nil), gatewayModels...)
 	for _, mapping := range mappings {
@@ -235,6 +251,9 @@ func reasoningTone(model, effort string) (string, error) {
 	e, err := normalizeReasoningEffort(effort)
 	if err != nil {
 		return "", err
+	}
+	if !supportedChatModel(model) {
+		return "", fmt.Errorf("unknown or unsupported chat model %q", strings.TrimSpace(model))
 	}
 	if tone, ok := configuredModelTone(model, currentSettings().ModelMappings); ok {
 		return tone, nil

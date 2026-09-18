@@ -194,24 +194,25 @@ func (s *Server) streamResponsesAdapter(w http.ResponseWriter, r *http.Request, 
 				if v, ok := tc["type"].(string); ok && v == "custom" {
 					typ = "custom"
 				}
+				callID, _ := tc["id"].(string)
+				fn, _ := tc["function"].(map[string]any)
+				name, _ := fn["name"].(string)
 				if st == nil {
 					prefix := "fc_"
-					item := map[string]any{"type": "function_call", "call_id": "", "name": "", "arguments": "", "status": "in_progress"}
+					item := map[string]any{"type": "function_call", "call_id": callID, "name": name, "arguments": "", "status": "in_progress"}
 					if typ == "custom" {
 						prefix = "ctc_"
-						item = map[string]any{"type": "custom_tool_call", "call_id": "", "name": "", "input": "", "status": "in_progress"}
+						item = map[string]any{"type": "custom_tool_call", "call_id": callID, "name": name, "input": "", "status": "in_progress"}
 					}
-					st = &tcState{ItemID: prefix + uuid.NewString(), Type: typ}
+					st = &tcState{ID: callID, Name: name, ItemID: prefix + uuid.NewString(), Type: typ}
 					calls[idx] = st
 					item["id"] = st.ItemID
 					emit("response.output_item.added", map[string]any{"type": "response.output_item.added", "output_index": idx, "item": item})
-				}
-				if v, ok := tc["id"].(string); ok {
-					st.ID = v
-				}
-				fn, _ := tc["function"].(map[string]any)
-				if v, ok := fn["name"].(string); ok {
-					st.Name += v
+				} else {
+					if callID != "" {
+						st.ID = callID
+					}
+					st.Name += name
 				}
 				if v, ok := fn["arguments"].(string); ok {
 					st.Args += v
@@ -311,6 +312,11 @@ func (s *Server) runOpenAIAdapter(r *http.Request, o oaiReq) (map[string]any, []
 	return out, rr.Body.Bytes(), rr.Code, err
 }
 
+func (s *Server) responsesDisabled(w http.ResponseWriter, r *http.Request) {
+	writeOpenAIError(w, http.StatusGone, "responses_disabled", "responses interface temporarily disabled; use /v1/chat/completions")
+	return
+}
+
 func (s *Server) responses(w http.ResponseWriter, r *http.Request) {
 	startedAt := time.Now()
 	if r.Method != http.MethodPost {
@@ -324,7 +330,11 @@ func (s *Server) responses(w http.ResponseWriter, r *http.Request) {
 	}
 	o, err := body.openAI()
 	if err != nil {
-		writeResponsesError(w, 400, "invalid_request_error", err.Error())
+		typ := "invalid_request_error"
+		if strings.HasPrefix(err.Error(), "unsupported_parameter:") {
+			typ = "unsupported_parameter"
+		}
+		writeResponsesError(w, 400, typ, err.Error())
 		return
 	}
 	// Dual isolation: tenant\x00session so two keys never share history and
@@ -353,7 +363,7 @@ func (s *Server) responses(w http.ResponseWriter, r *http.Request) {
 			writeResponsesError(w, 400, "invalid_request_error", "unknown previous_response_id")
 			return
 		}
-		if prior.Tenant != "" && prior.Tenant != tenant {
+		if prior.Tenant == "" || prior.Tenant != tenant {
 			s.responseMu.Unlock()
 			writeResponsesError(w, 400, "invalid_request_error", "previous_response_id tenant mismatch")
 			return

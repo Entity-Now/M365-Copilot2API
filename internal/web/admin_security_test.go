@@ -178,6 +178,29 @@ func TestValidNewAdminPasswordStrength(t *testing.T) {
 	}
 }
 
+func TestResponsesAliasUsesAPIAuthentication(t *testing.T) {
+	t.Setenv("M365_ADMIN_PASSWORD", "Str0ng!Passw0rd#2024")
+	t.Setenv("M365_ADMIN_PASSWORD_FILE", t.TempDir()+"/admin-password")
+	t.Setenv("M365_ADMIN_PASSWORD_BOOTSTRAP_FILE", "")
+	s, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	recorder := httptest.NewRecorder()
+	s.Routes().ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/responses", strings.NewReader("{}")))
+
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusUnauthorized)
+	}
+	if strings.Contains(recorder.Body.String(), "administrator login required") {
+		t.Fatalf("responses alias entered administrator middleware: %s", recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "valid API key required") {
+		t.Fatalf("responses alias did not use API authentication: %s", recorder.Body.String())
+	}
+}
+
 func TestAdminPasswordHistoryBcrypt(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("M365_ADMIN_PASSWORD_FILE", dir+"/admin-password")

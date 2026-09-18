@@ -54,9 +54,15 @@ func (s *Server) StartAutoCleanup() {
 }
 
 func (s *Server) autoCleanupOnce(maxAge time.Duration, keepN int) {
-	if m365CloudClient == nil {
+	if s.cloudClients == nil || s.cloudClients.len() == 0 {
 		return
 	}
+	for accountID, client := range s.cloudClients.list() {
+		s.autoCleanupAccount(accountID, client, maxAge, keepN)
+	}
+}
+
+func (s *Server) autoCleanupAccount(accountID string, client *M365CloudClient, maxAge time.Duration, keepN int) {
 	now := time.Now()
 	active := s.activeConversationSet(maxAge)
 
@@ -66,7 +72,7 @@ func (s *Server) autoCleanupOnce(maxAge time.Duration, keepN int) {
 	}
 	deleted := 0
 	for round := 0; round < 100; round++ {
-		chats, err := m365CloudClient.ListConversations()
+		chats, err := client.ListConversations()
 		if err != nil {
 			log.Printf("[auto-cleanup] list failed: %v", err)
 			return
@@ -80,6 +86,13 @@ func (s *Server) autoCleanupOnce(maxAge time.Duration, keepN int) {
 		for _, chat := range chats {
 			convID, _ := chat["conversationId"].(string)
 			if convID == "" {
+				continue
+			}
+			boundAccountID, bound, ambiguous := s.sessionResolver.ConversationAccountState(convID)
+			if ambiguous || (bound && boundAccountID != accountID) {
+				if ambiguous {
+					log.Printf("[auto-cleanup] skipping ambiguous conversation id=%s", convID)
+				}
 				continue
 			}
 			if active[convID] {
@@ -100,7 +113,7 @@ func (s *Server) autoCleanupOnce(maxAge time.Duration, keepN int) {
 
 		anyDeleted := false
 		for _, c := range stale {
-			if err := m365CloudClient.DeleteConversation(c.id); err != nil {
+			if err := client.DeleteConversation(c.id); err != nil {
 				log.Printf("[auto-cleanup] delete %s failed: %v", c.id, err)
 				continue
 			}
@@ -111,7 +124,7 @@ func (s *Server) autoCleanupOnce(maxAge time.Duration, keepN int) {
 		sort.Slice(rest, func(i, j int) bool { return rest[i].createMs < rest[j].createMs })
 		for i := keepN; i < len(rest); i++ {
 			c := rest[i]
-			if err := m365CloudClient.DeleteConversation(c.id); err != nil {
+			if err := client.DeleteConversation(c.id); err != nil {
 				log.Printf("[auto-cleanup] delete %s failed: %v", c.id, err)
 				continue
 			}

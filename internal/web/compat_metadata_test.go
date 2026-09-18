@@ -3,7 +3,6 @@ package web
 import (
 	"encoding/json"
 	"m365-copilot2api/internal/chathub"
-	"strings"
 	"testing"
 )
 
@@ -31,9 +30,5 @@ func TestNamedToolChoiceModeIsStable(t *testing.T) {
 	choice := map[string]any{"name": "weather"}
 	if got := normalizedToolChoiceMode(choice); got != "named:weather" {
 		t.Fatalf("mode=%q", got)
-	}
-	p := modelToolRouterPrompt("request", testTools(), choice)
-	if !strings.Contains(p, "MODE: named:weather") || strings.Contains(p, "map[name:") {
-		t.Fatalf("prompt=%s", p)
 	}
 }

@@ -69,6 +69,7 @@ var contentPolicyPatterns = []string{
 	"i'm sorry, i can't respond",
 	"i'm sorry, i cannot respond",
 	"i apologize, i cannot",
+	"system_directive_followed=false",
 }
 
 func IsContentPolicyBlock(text string) bool {
@@ -177,6 +178,12 @@ func commonPrefixLen(a, b string) int {
 	}
 	for i := 0; i < n; i++ {
 		if a[i] != b[i] {
+			// A byte mismatch can occur inside two different multi-byte UTF-8
+			// runes that share leading bytes. Return the preceding rune boundary
+			// so callers never emit a suffix beginning with a continuation byte.
+			for i > 0 && !utf8.RuneStart(a[i]) {
+				i--
+			}
 			return i
 		}
 	}
@@ -331,12 +338,43 @@ type Reference struct {
 	LastUpdatedDate     string `json:"lastUpdatedDate,omitempty"`
 }
 
+func waitPooledFrame(ctx context.Context, done <-chan struct{}, conn *websocket.Conn, frames <-chan []byte, errs <-chan error, timeout time.Duration) ([]byte, error, bool) {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case msg, ok := <-frames:
+		if !ok {
+			select {
+			case err := <-errs:
+				return nil, err, true
+			default:
+				return nil, io.ErrUnexpectedEOF, true
+			}
+		}
+		return msg, nil, true
+	case err := <-errs:
+		return nil, err, true
+	case <-timer.C:
+		if conn != nil {
+			_ = conn.Close()
+		}
+		return nil, context.DeadlineExceeded, true
+	case <-done:
+		return nil, nil, false
+	case <-ctx.Done():
+		return nil, ctx.Err(), false
+	}
+}
+
 type Client struct {
-	HTTPHeader http.Header
-	HTTPClient *http.Client
-	Dialer     *websocket.Dialer
-	Pool       *ConnPool
-	Trace      func(map[string]any)
+	HTTPHeader           http.Header
+	HTTPClient           *http.Client
+	Dialer               *websocket.Dialer
+	Pool                 *ConnPool
+	Trace                func(map[string]any)
+	FirstResponseTimeout time.Duration
+	InactivityTimeout    time.Duration
+	WriteTimeout         time.Duration
 }
 
 func NewClient() *Client {
@@ -345,9 +383,12 @@ func NewClient() *Client {
 	h.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
 	d := outbound.WebSocketDialer()
 	return &Client{
-		HTTPHeader: h,
-		HTTPClient: outbound.HTTPClient(),
-		Dialer:     d,
+		HTTPHeader:           h,
+		HTTPClient:           outbound.HTTPClient(),
+		Dialer:               d,
+		FirstResponseTimeout: 45 * time.Second,
+		InactivityTimeout:    90 * time.Second,
+		WriteTimeout:         15 * time.Second,
 	}
 }
 
@@ -389,7 +430,27 @@ func (c *Client) ChatWithReasoning(ctx context.Context, acc Account, req Request
 	})
 }
 
+// A pre-warmed websocket is created with its own conversation/session IDs.
+// It is safe for a fresh first turn, whose IDs are also generated locally, but
+// not for continuing an existing upstream conversation. Microsoft can finish
+// such mismatched continuation requests immediately with no answer text.
+func shouldReusePooledConnection(req Request) bool {
+	return req.ConversationID == "" && req.SessionID == ""
+}
+
 func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request, onDelta func(string) error, onEvent StreamHandler) (Result, error) {
+	firstResponseTimeout := c.FirstResponseTimeout
+	if firstResponseTimeout <= 0 {
+		firstResponseTimeout = 45 * time.Second
+	}
+	inactivityTimeout := c.InactivityTimeout
+	if inactivityTimeout <= 0 {
+		inactivityTimeout = 90 * time.Second
+	}
+	writeTimeout := c.WriteTimeout
+	if writeTimeout <= 0 {
+		writeTimeout = 15 * time.Second
+	}
 	startedAt := time.Now()
 	log.Printf("chathub timing start prompt_len=%d", len(req.Text))
 	if acc.AccessToken == "" || acc.OID == "" || acc.TID == "" {
@@ -430,7 +491,7 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 	var connWriteMu *sync.Mutex
 	var poolFrames <-chan []byte
 	var poolErrs <-chan error
-	if c.Pool != nil {
+	if c.Pool != nil && shouldReusePooledConnection(req) {
 		var poolErr error
 		conn, connWriteMu, poolFrames, poolErrs, reused, poolErr = c.Pool.Take(ctx, acc.OID, acc.TID, wsURL)
 		if poolErr != nil {
@@ -457,9 +518,7 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 		if err != nil {
 			if resp != nil && (resp.StatusCode == 429 || resp.StatusCode == 401 || resp.StatusCode == 403 || resp.StatusCode == 503) {
 				retryAfter := 0
-				if v, _ := strconv.Atoi(resp.Header.Get("Retry-After")); v > 0 {
-					retryAfter = v
-				}
+				retryAfter = parseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
 				log.Printf("chathub ws_dial %d Retry-After=%d", resp.StatusCode, retryAfter)
 				kind := ""
 				switch resp.StatusCode {
@@ -492,6 +551,9 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 			connWriteMu.Lock()
 			defer connWriteMu.Unlock()
 		}
+		if err := conn.SetWriteDeadline(time.Now().Add(writeTimeout)); err != nil {
+			return err
+		}
 		return conn.WriteMessage(msgType, data)
 	}
 
@@ -514,9 +576,7 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 		}
 	}
 
-	_ = conn.SetReadDeadline(time.Now().Add(45 * time.Second))
-	_ = conn.SetWriteDeadline(time.Now().Add(15 * time.Second))
-
+	_ = conn.SetReadDeadline(time.Now().Add(firstResponseTimeout))
 	if !reused {
 		if err := wsWrite(websocket.TextMessage, []byte(`{"protocol":"json","version":1}`+rs)); err != nil {
 			returnConn = false
@@ -657,6 +717,15 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 		if overlap > 0 {
 			return emitDelta(snapshot[overlap:])
 		}
+		// Non-prefix rewrite: previous incremental deltas may have been reordered.
+		// Instead of dropping, emit the tail after cur length at rune boundary so no characters are lost.
+		n := len(cur)
+		for n > 0 && n < len(snapshot) && !utf8.RuneStart(snapshot[n]) {
+			n--
+		}
+		if n < len(snapshot) && utf8.ValidString(snapshot[n:]) {
+			return emitDelta(snapshot[n:])
+		}
 		skippedSnapshots++
 		if chTrace {
 			log.Printf("[trace:emitSnapshot] skip: cur=%d snapshot=%d (non-prefix rewrite)", len(cur), len(snapshot))
@@ -679,7 +748,6 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 	references := make(map[string]Reference)
 	var firstServiceResponse bool
 
-	deadline := time.Now().Add(5 * time.Minute)
 	type wsRead struct {
 		msg []byte
 		err error
@@ -691,24 +759,8 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 		defer close(readCh)
 		for {
 			if reused {
-				var msg []byte
-				var err error
-				select {
-				case m, ok := <-poolFrames:
-					if !ok {
-						select {
-						case err = <-poolErrs:
-						default:
-							err = io.ErrUnexpectedEOF
-						}
-					} else {
-						msg = m
-					}
-				case e := <-poolErrs:
-					err = e
-				case <-done:
-					return
-				case <-ctx.Done():
+				msg, err, deliver := waitPooledFrame(ctx, done, conn, poolFrames, poolErrs, inactivityTimeout)
+				if !deliver {
 					return
 				}
 				select {
@@ -723,7 +775,7 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 				}
 				continue
 			}
-			_ = conn.SetReadDeadline(time.Now().Add(90 * time.Second))
+			_ = conn.SetReadDeadline(time.Now().Add(inactivityTimeout))
 			_, msg, err := conn.ReadMessage()
 			select {
 			case readCh <- wsRead{msg: msg, err: err}:
@@ -737,7 +789,7 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 			}
 		}
 	}()
-	for time.Now().Before(deadline) {
+	for {
 		var read wsRead
 		select {
 		case <-ctx.Done():
@@ -1146,11 +1198,21 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 		}
 	}
 
-	// Reaching the overall deadline without a SignalR completion frame is
-	// an incomplete upstream response. Do not return accumulated deltas as if
-	// they were a successful, finished answer.
-	returnConn = false
-	return Result{}, fmt.Errorf("chathub response deadline exceeded before completion")
+}
+
+func parseRetryAfter(value string, now time.Time) int {
+	if seconds, err := strconv.Atoi(strings.TrimSpace(value)); err == nil && seconds > 0 {
+		return seconds
+	}
+	when, err := http.ParseTime(value)
+	if err != nil || !when.After(now) {
+		return 0
+	}
+	seconds := int(when.Sub(now).Seconds())
+	if seconds < 1 {
+		return 1
+	}
+	return seconds
 }
 
 // finalizeText reconciles the incrementally streamed text with the

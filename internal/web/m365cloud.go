@@ -11,13 +11,20 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"m365-copilot2api/internal/auth"
 )
+
+var m365AuthStore *auth.Store
+
+func SetM365AuthStore(s *auth.Store) { m365AuthStore = s }
 
 type M365CloudClient struct {
 	mu           sync.Mutex
 	clientID     string
 	tenantID     string
 	refreshToken string
+	accountID    string
 	accessToken  string
 	expiresAt    time.Time
 	httpClient   *http.Client
@@ -32,11 +39,19 @@ func NewM365CloudClient(clientID, tenantID, refreshToken string) *M365CloudClien
 	}
 }
 
+func NewM365CloudClientForAccount(accountID, clientID, tenantID, refreshToken string) *M365CloudClient {
+	c := NewM365CloudClient(clientID, tenantID, refreshToken)
+	c.accountID = accountID
+	return c
+}
+
 func (c *M365CloudClient) updateRefreshToken(newToken string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if newToken != "" && newToken != c.refreshToken {
 		c.refreshToken = newToken
+		c.accessToken = ""
+		c.expiresAt = time.Time{}
 	}
 }
 
@@ -60,7 +75,6 @@ func (c *M365CloudClient) getAccessToken() (string, error) {
 	v.Set("client_id", c.clientID)
 	v.Set("refresh_token", c.refreshToken)
 	v.Set("grant_type", "refresh_token")
-	v.Set("scope", "https://m365.cloud.microsoft/v2/.default")
 	payload := v.Encode()
 
 	resp, err := c.httpClient.Post(
@@ -89,6 +103,10 @@ func (c *M365CloudClient) getAccessToken() (string, error) {
 		return "", fmt.Errorf("parse token response: %w", err)
 	}
 	if result.Error != "" {
+		if strings.Contains(result.Error, "invalid_grant") && c.accessToken != "" {
+			log.Printf("[m365-cloud] invalid_grant fallback to existing access_token for %s", c.accountID)
+			return c.accessToken, nil
+		}
 		return "", fmt.Errorf("token error: %s - %s", result.Error, result.ErrorDesc)
 	}
 
@@ -96,6 +114,11 @@ func (c *M365CloudClient) getAccessToken() (string, error) {
 	c.expiresAt = time.Now().Add(time.Duration(result.ExpiresIn) * time.Second)
 	if result.RefreshToken != "" {
 		c.refreshToken = result.RefreshToken
+		if c.accountID != "" && m365AuthStore != nil {
+			if err := m365AuthStore.UpdateRefreshToken(c.accountID, result.RefreshToken); err != nil {
+				log.Printf("[m365-cloud] persist refresh_token failed for %s: %v", c.accountID, err)
+			}
+		}
 	}
 
 	log.Printf("[m365-cloud] token refreshed, expires in %ds", result.ExpiresIn)
@@ -175,12 +198,12 @@ func (c *M365CloudClient) doAPI(action string, payload map[string]any) (map[stri
 
 func (c *M365CloudClient) DeleteConversation(conversationID string) error {
 	log.Printf("[m365-cloud] deleting conversation %s", conversationID)
+	emptyChats := map[string]any{"chats": []any{}}
 	_, err := c.doAPI("DeleteConversation", map[string]any{
 		"conversationId": conversationID,
 		"state": map[string]any{
-			"conversationPageHistoryList": map[string]any{
-				"chats": []any{},
-			},
+			"conversationPageHistoryList":     emptyChats,
+			"taskConversationPageHistoryList": emptyChats,
 		},
 	})
 	return err
@@ -200,8 +223,11 @@ func (c *M365CloudClient) ListConversations() ([]map[string]any, error) {
 
 	historyList, ok := store["conversationPageHistoryList"].(map[string]any)
 	if !ok {
-		log.Printf("[m365-cloud] conversationPageHistoryList missing from store, returning empty list. store keys: %v", func() []string {
-			keys := make([]string, 0)
+		historyList, ok = store["taskConversationPageHistoryList"].(map[string]any)
+	}
+	if !ok {
+		log.Printf("[m365-cloud] conversation history list missing from store, returning empty list. store keys: %v", func() []string {
+			keys := make([]string, 0, len(store))
 			for k := range store {
 				keys = append(keys, k)
 			}
@@ -302,12 +328,70 @@ func (s stringReader) Read(p []byte) (int, error) {
 	return n, nil
 }
 
-var m365CloudClient *M365CloudClient
-
-func InitM365CloudClient(clientID, tenantID, refreshToken string) {
-	m365CloudClient = NewM365CloudClient(clientID, tenantID, refreshToken)
+type m365CloudClientManager struct {
+	mu      sync.RWMutex
+	clients map[string]*M365CloudClient
 }
 
-func GetM365CloudClient() *M365CloudClient {
-	return m365CloudClient
+func newM365CloudClientManager() *m365CloudClientManager {
+	return &m365CloudClientManager{clients: map[string]*M365CloudClient{}}
+}
+
+func (m *m365CloudClientManager) sync(accountID, clientID, tenantID, refreshToken string) {
+	if m == nil || accountID == "" {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if tenantID == "" || refreshToken == "" {
+		delete(m.clients, accountID)
+		return
+	}
+	if existing := m.clients[accountID]; existing != nil && existing.clientID == clientID && existing.tenantID == tenantID {
+		existing.updateRefreshToken(refreshToken)
+		return
+	}
+	m.clients[accountID] = NewM365CloudClientForAccount(accountID, clientID, tenantID, refreshToken)
+}
+
+func (m *m365CloudClientManager) remove(accountID string) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	delete(m.clients, accountID)
+	m.mu.Unlock()
+}
+
+func (m *m365CloudClientManager) get(accountID string) (*M365CloudClient, bool) {
+	if m == nil {
+		return nil, false
+	}
+	m.mu.RLock()
+	client, ok := m.clients[accountID]
+	m.mu.RUnlock()
+	return client, ok
+}
+
+func (m *m365CloudClientManager) list() map[string]*M365CloudClient {
+	out := map[string]*M365CloudClient{}
+	if m == nil {
+		return out
+	}
+	m.mu.RLock()
+	for accountID, client := range m.clients {
+		out[accountID] = client
+	}
+	m.mu.RUnlock()
+	return out
+}
+
+func (m *m365CloudClientManager) len() int {
+	if m == nil {
+		return 0
+	}
+	m.mu.RLock()
+	n := len(m.clients)
+	m.mu.RUnlock()
+	return n
 }

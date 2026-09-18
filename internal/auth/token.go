@@ -74,6 +74,26 @@ func ExchangeCode(code, verifier, redirect string) (TokenSet, error) {
 	return requestToken(form)
 }
 
+func ExchangeCodeAt(code, verifier, redirect, clientID, scope, tokenEndpoint string) (TokenSet, error) {
+	form := url.Values{}
+	form.Set("client_id", clientID)
+	form.Set("grant_type", "authorization_code")
+	form.Set("code", code)
+	form.Set("redirect_uri", redirect)
+	form.Set("code_verifier", verifier)
+	form.Set("scope", scope)
+	return requestTokenTenant(form, tokenEndpoint, "Graph authorization", "", "")
+}
+
+func RefreshAt(refreshToken, clientID, scope, tokenEndpoint string) (TokenSet, error) {
+	form := url.Values{}
+	form.Set("client_id", clientID)
+	form.Set("grant_type", "refresh_token")
+	form.Set("refresh_token", refreshToken)
+	form.Set("scope", scope)
+	return requestTokenTenant(form, tokenEndpoint, "Graph refresh", "", "")
+}
+
 func Refresh(refreshToken, clientID, tokenEndpoint, oid, tid string) (TokenSet, error) {
 	form := url.Values{}
 	if clientID == "" {

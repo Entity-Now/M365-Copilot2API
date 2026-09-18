@@ -37,7 +37,7 @@ func walkNative(v any, allowed map[string]bool, out *[]detectedToolCall) {
 		}
 	case map[string]any:
 		name := ""
-		for _, k := range []string{"name", "toolName", "pluginName", "functionName", "id"} {
+		for _, k := range []string{"name", "toolName", "pluginName", "functionName"} {
 			if s, ok := x[k].(string); ok && allowed[s] {
 				name = s
 				break
@@ -53,7 +53,11 @@ func walkNative(v any, allowed map[string]bool, out *[]detectedToolCall) {
 			}
 			if a != nil {
 				b, _ := json.Marshal(a)
-				*out = append(*out, detectedToolCall{ID: "call_" + uuid.NewString(), Name: name, Arguments: b})
+				callID, _ := x["id"].(string)
+				if callID == "" {
+					callID = "call_" + uuid.NewString()
+				}
+				*out = append(*out, detectedToolCall{ID: callID, Name: name, Arguments: b})
 				return
 			}
 		}

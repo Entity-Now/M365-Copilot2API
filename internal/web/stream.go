@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"m365-copilot2api/internal/auth"
 	"m365-copilot2api/internal/chathub"
 )
 
@@ -36,7 +37,14 @@ func (s *Server) chatStream(w http.ResponseWriter, r *http.Request) {
 			body.SessionID = firstNonEmpty(body.SessionID, v.SessionID)
 		}
 	}
-	acc, err := s.resolveAccount(body.AccountID)
+	accountIDs := s.apiKeys.accountIDs(rawAPIKey(r))
+	var acc auth.AccountToken
+	var err error
+	if len(accountIDs) > 0 {
+		acc, err = s.resolveBoundAccount(accountIDs, body.AccountID)
+	} else {
+		acc, err = s.resolveAccount(body.AccountID)
+	}
 	if err != nil {
 		writeUpstreamError(w, err)
 		return
@@ -60,6 +68,20 @@ func (s *Server) chatStream(w http.ResponseWriter, r *http.Request) {
 		ConversationSignature: body.ConversationSignature, PreviousMessages: body.PreviousMessages, ConnectedFederatedIDs: body.ConnectedFederatedIDs,
 		FeatureFlags: s.featureFlags(),
 	})
+	if err != nil && body.AccountID == "" && body.ConversationID == "" && (IsRateLimited(err) || IsAuthFailure(err)) {
+		if next, nextErr := s.nextHealthyAccount(acc.ID, accountIDs); nextErr == nil {
+			ctx2 := ctx
+			res, err = s.chatWithAccount(ctx2, next.ID, chathub.Account{AccessToken: next.AccessToken, OID: next.OID, TID: next.TID}, chathub.Request{
+				Text: text, Tone: body.Tone, ConversationID: body.ConversationID, SessionID: body.SessionID, Attachments: body.Attachments,
+				LicenseType: streamSettings.LicenseType, Scenario: streamSettings.Scenario,
+				ConversationSignature: body.ConversationSignature, PreviousMessages: body.PreviousMessages, ConnectedFederatedIDs: body.ConnectedFederatedIDs,
+				FeatureFlags: s.featureFlags(),
+			})
+			if err == nil {
+				acc = next
+			}
+		}
+	}
 	if err != nil {
 		if errors.Is(err, chathub.ErrImageLimit) && s.accountPool != nil {
 			s.accountPool.MarkImageLimited(acc.ID)

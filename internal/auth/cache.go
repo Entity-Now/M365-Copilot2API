@@ -84,22 +84,41 @@ func CachePath() string {
 // 并将主密钥接入 OS DPAPI/keyring (Windows DPAPI, macOS Keychain, Linux libsecret)，见 TODO 后续。
 const encPrefix = "enc:v1:"
 
-func masterKey() []byte {
+func masterKey() ([]byte, error) {
 	raw := strings.TrimSpace(os.Getenv("M365_MASTER_KEY"))
 	if raw == "" {
 		raw = strings.TrimSpace(os.Getenv("M365_TOKEN_ENCRYPTION_KEY"))
 	}
 	if raw == "" {
-		log.Printf("[security] WARNING: M365_MASTER_KEY not set; refresh tokens are encrypted with a built-in public fallback key. Set M365_MASTER_KEY to protect accounts.json at rest.")
-		raw = "m365-copilot2api-fallback-pepper-v1-TODO-DPAPI-keyring"
+		return nil, errors.New("M365_MASTER_KEY is required to encrypt account refresh tokens")
 	}
 	pepper := []byte("m365-copilot2api-pepper-v1")
 	mac := hmac.New(sha256.New, pepper)
 	_, _ = mac.Write([]byte(raw))
-	return mac.Sum(nil)
+	return mac.Sum(nil), nil
+}
+
+func HasMasterKey() bool {
+	return strings.TrimSpace(os.Getenv("M365_MASTER_KEY")) != "" || strings.TrimSpace(os.Getenv("M365_TOKEN_ENCRYPTION_KEY")) != ""
+}
+
+func EncryptSecret(plain string) (string, error) {
+	if !HasMasterKey() {
+		return "", errors.New("M365_MASTER_KEY is required")
+	}
+	return encryptRefreshToken(plain)
+}
+
+func DecryptSecret(encrypted string) (string, error) {
+	if !HasMasterKey() {
+		return "", errors.New("M365_MASTER_KEY is required")
+	}
+	return decryptRefreshToken(encrypted)
 }
 
 func isEncrypted(s string) bool { return strings.HasPrefix(s, encPrefix) }
+
+var legacyEncWarnOnce sync.Once
 
 func encryptRefreshToken(plain string) (string, error) {
 	if plain == "" {
@@ -108,7 +127,20 @@ func encryptRefreshToken(plain string) (string, error) {
 	if isEncrypted(plain) {
 		return plain, nil
 	}
-	key := masterKey()
+	key, err := masterKey()
+	if err != nil {
+		// Compatibility: without M365_MASTER_KEY keep the historical
+		// fallback-key persistence so existing installs keep working.
+		// New installs should set the env key for real protection.
+		if !HasMasterKey() {
+			legacyEncWarnOnce.Do(func() {
+				log.Printf("[security] WARNING: M365_MASTER_KEY not set; refresh tokens are encrypted with a built-in public fallback key. Set M365_MASTER_KEY to protect accounts.json at rest.")
+			})
+			key = legacyFallbackKey()
+		} else {
+			return "", err
+		}
+	}
 	block, err := aes.NewCipher(key)
 	if err != nil {
 		return "", err
@@ -141,7 +173,33 @@ func decryptRefreshToken(enc string) (string, error) {
 			return "", err
 		}
 	}
-	key := masterKey()
+	if key, err := masterKey(); err == nil {
+		if pt, err := openTokenGCM(key, b); err == nil {
+			return pt, nil
+		}
+	}
+	// Migration: tokens written before M365_MASTER_KEY became mandatory were
+	// encrypted with the built-in fallback key. Accept them read-only so
+	// existing accounts keep refreshing; new writes still require the env key.
+	if !HasMasterKey() {
+		if pt, err := openTokenGCM(legacyFallbackKey(), b); err == nil {
+			log.Printf("[security] WARNING: account refresh token decrypted with legacy fallback key; set M365_MASTER_KEY to re-encrypt at rest")
+			return pt, nil
+		}
+	}
+	return "", errors.New("M365_MASTER_KEY is required to encrypt account refresh tokens")
+}
+
+// legacyFallbackKey derives the pre-mandatory-key built-in encryption key.
+// It must only be used to decrypt old ciphertext, never for new encryptions.
+func legacyFallbackKey() []byte {
+	pepper := []byte("m365-copilot2api-pepper-v1")
+	mac := hmac.New(sha256.New, pepper)
+	_, _ = mac.Write([]byte("m365-copilot2api-fallback-pepper-v1-TODO-DPAPI-keyring"))
+	return mac.Sum(nil)
+}
+
+func openTokenGCM(key, b []byte) (string, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {
 		return "", err
@@ -294,16 +352,36 @@ func (s *Store) List() []AccountToken {
 }
 
 func (s *Store) SetScheduleEnabled(id string, enabled bool) error {
+	return s.SetScheduleEnabledBatch([]string{id}, enabled)
+}
+
+func (s *Store) SetScheduleEnabledBatch(ids []string, enabled bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for i := range s.data.Accounts {
-		if s.data.Accounts[i].ID == id {
-			s.data.Accounts[i].ScheduleDisabled = !enabled
-			s.data.Accounts[i].UpdatedAt = time.Now()
-			return s.saveLocked()
+	selected := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		selected[id] = struct{}{}
+	}
+	for id := range selected {
+		found := false
+		for i := range s.data.Accounts {
+			if s.data.Accounts[i].ID == id {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return errors.New("account not found")
 		}
 	}
-	return errors.New("account not found")
+	now := time.Now()
+	for i := range s.data.Accounts {
+		if _, ok := selected[s.data.Accounts[i].ID]; ok {
+			s.data.Accounts[i].ScheduleDisabled = !enabled
+			s.data.Accounts[i].UpdatedAt = now
+		}
+	}
+	return s.saveLocked()
 }
 
 func (s *Store) ScheduleEnabled(id string) bool {

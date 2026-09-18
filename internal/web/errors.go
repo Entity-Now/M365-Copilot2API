@@ -12,6 +12,7 @@ import (
 )
 
 var ErrOffensiveContent = errors.New("upstream content policy flagged as offensive")
+var ErrAccountNotBound = errors.New("account is not available for this API key")
 
 func logOAuthError(stage string, err error) {
 	var oauthErr *auth.OAuthError
@@ -28,6 +29,9 @@ func upstreamError(err error) string {
 	if err == nil {
 		return "upstream request failed"
 	}
+	if ClassifyError(err) == CategoryClientCanceled {
+		return "client canceled request"
+	}
 	log.Printf("upstream request failed: %v", err)
 	return "upstream request failed"
 }
@@ -36,6 +40,9 @@ func upstreamError(err error) string {
 // rate limits stay 429 (with Retry-After when known), auth failures become 401,
 // everything else is 502. Unknown upstream failures must never leak internals.
 func upstreamStatus(err error) int {
+	if errors.Is(err, ErrAccountNotBound) {
+		return http.StatusForbidden
+	}
 	if errors.Is(err, chathub.ErrOffensiveContent) {
 		return http.StatusServiceUnavailable
 	}
@@ -123,7 +130,11 @@ func writeUpstreamErrorWithAccount(w http.ResponseWriter, err error, accountID s
 			writeOpenAIError(w, status, "image_limit_error", "image generation daily limit reached; try again tomorrow")
 			return
 		}
-		writeOpenAIError(w, status, "rate_limit_error", "upstream is rate limiting; try again shortly")
+		msg := "upstream is rate limiting; try again shortly"
+		if errors.Is(err, chathub.ErrMeteringThrottled) || errors.Is(err, chathub.ErrRateLimitNotice) {
+			msg = "upstream is throttling requests; try next account or back off"
+		}
+		writeOpenAIError(w, status, "rate_limit_error", msg)
 		return
 	}
 	if IsEmptyCompletion(err) {
@@ -190,7 +201,11 @@ func writeUpstreamError(w http.ResponseWriter, err error) {
 			writeOpenAIError(w, status, "image_limit_error", "image generation daily limit reached; try again tomorrow")
 			return
 		}
-		writeOpenAIError(w, status, "rate_limit_error", "upstream is rate limiting; try again shortly")
+		msg := "upstream is rate limiting; try again shortly"
+		if errors.Is(err, chathub.ErrMeteringThrottled) || errors.Is(err, chathub.ErrRateLimitNotice) {
+			msg = "upstream is throttling requests; try next account or back off"
+		}
+		writeOpenAIError(w, status, "rate_limit_error", msg)
 		return
 	}
 	if IsEmptyCompletion(err) {

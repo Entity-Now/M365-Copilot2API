@@ -217,6 +217,9 @@ func (t *poolRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) {
 	if err == nil {
 		return resp, nil
 	}
+	if r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodOptions && r.Method != http.MethodTrace {
+		return resp, err
+	}
 	// Replay the request on the next healthy proxy once (body must be replayable).
 	if r.Body != nil && r.GetBody == nil {
 		return resp, err

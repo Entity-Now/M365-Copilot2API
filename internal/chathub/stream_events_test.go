@@ -1,6 +1,35 @@
 package chathub
 
-import "testing"
+import (
+	"testing"
+	"unicode/utf8"
+)
+
+func TestCommonPrefixLenStopsAtUTF8RuneBoundary(t *testing.T) {
+	a := "你好"
+	b := "你坏"
+
+	n := commonPrefixLen(a, b)
+	if got, want := a[:n], "你"; got != want {
+		t.Fatalf("common prefix = %q, want %q", got, want)
+	}
+	if !utf8.ValidString(a[n:]) || !utf8.ValidString(b[n:]) {
+		t.Fatalf("prefix length %d splits a UTF-8 rune", n)
+	}
+}
+
+func TestCommonPrefixLenHandlesEmojiDivergence(t *testing.T) {
+	a := "结果😀完成"
+	b := "结果😁完成"
+
+	n := commonPrefixLen(a, b)
+	if got, want := a[:n], "结果"; got != want {
+		t.Fatalf("common prefix = %q, want %q", got, want)
+	}
+	if !utf8.ValidString(b[n:]) {
+		t.Fatalf("suffix %q is not valid UTF-8", b[n:])
+	}
+}
 
 func TestClassifyUpdateMessages(t *testing.T) {
 	got := classifyUpdateMessages([]any{

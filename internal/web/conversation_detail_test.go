@@ -23,11 +23,10 @@ func TestConversationListAndDetailUseCompleteLocalHistory(t *testing.T) {
 	}
 	s := &Server{tokens: store, sessionResolver: openSessionResolver()}
 
-	oldCloudClient := m365CloudClient
-	m365CloudClient = nil
-	defer func() { m365CloudClient = oldCloudClient }()
+	s.cloudClients = newM365CloudClientManager()
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	req.Header.Set("Authorization", "Bearer detail-key")
 	req.Header.Set(sessionHeaderName, "session-detail")
 	body := &oaiReq{Messages: []oaiMsg{
 		{Role: "user", Content: "show the complete answer"},
@@ -36,7 +35,9 @@ func TestConversationListAndDetailUseCompleteLocalHistory(t *testing.T) {
 	s.sessionResolver.Bind("", "conversation-detail", "account-a", body, "", req)
 
 	listRecorder := httptest.NewRecorder()
-	s.handleM365Conversations(listRecorder, httptest.NewRequest(http.MethodGet, "/api/m365/conversations", nil))
+	listRequest := httptest.NewRequest(http.MethodGet, "/api/m365/conversations", nil)
+	listRequest.Header.Set("Authorization", "Bearer detail-key")
+	s.handleM365Conversations(listRecorder, listRequest)
 	if listRecorder.Code != http.StatusOK {
 		t.Fatalf("list status=%d body=%s", listRecorder.Code, listRecorder.Body.String())
 	}
@@ -52,7 +53,9 @@ func TestConversationListAndDetailUseCompleteLocalHistory(t *testing.T) {
 	}
 
 	detailRecorder := httptest.NewRecorder()
-	s.handleM365ConversationDetail(detailRecorder, httptest.NewRequest(http.MethodGet, "/api/m365/conversations/detail?id=conversation-detail", nil))
+	detailRequest := httptest.NewRequest(http.MethodGet, "/api/m365/conversations/detail?id=conversation-detail", nil)
+	detailRequest.Header.Set("Authorization", "Bearer detail-key")
+	s.handleM365ConversationDetail(detailRecorder, detailRequest)
 	if detailRecorder.Code != http.StatusOK {
 		t.Fatalf("detail status=%d body=%s", detailRecorder.Code, detailRecorder.Body.String())
 	}
@@ -95,5 +98,22 @@ func TestConversationTimestampPrefersUpdateTime(t *testing.T) {
 	updated := time.Now().UnixMilli()
 	if got := conversationTimestamp(map[string]any{"createTimeUtc": created, "updateTimeUtc": updated}); got != updated {
 		t.Fatalf("timestamp=%d want %d", got, updated)
+	}
+}
+
+func TestM365CloudRefreshTokenChangeInvalidatesCachedAccessToken(t *testing.T) {
+	client := NewM365CloudClient("client", "tenant", "old-refresh")
+	client.accessToken = "cached-access"
+	client.expiresAt = time.Now().Add(time.Hour)
+
+	client.updateRefreshToken("new-refresh")
+
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	if client.refreshToken != "new-refresh" {
+		t.Fatalf("refresh token was not updated")
+	}
+	if client.accessToken != "" || !client.expiresAt.IsZero() {
+		t.Fatalf("cached access token was not invalidated")
 	}
 }

@@ -10,8 +10,8 @@ func TestToolPlanningModeDefaultsToRouter(t *testing.T) {
 	}
 }
 
-func TestToolPlanningModeAcceptsNative(t *testing.T) {
-	if got := toolPlanningMode(" native "); got != "native" {
-		t.Fatalf("toolPlanningMode(native)=%q, want native", got)
+func TestToolPlanningModeRejectsUnverifiedNativeMode(t *testing.T) {
+	if got := toolPlanningMode(" native "); got != "router" {
+		t.Fatalf("toolPlanningMode(native)=%q, want router", got)
 	}
 }

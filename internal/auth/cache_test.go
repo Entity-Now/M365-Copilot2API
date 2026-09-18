@@ -65,3 +65,28 @@ func TestScheduleEnabledPersists(t *testing.T) {
 		t.Fatal("scheduling state was not persisted")
 	}
 }
+
+func TestSetScheduleEnabledBatchIsAtomic(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tokens.json")
+	store, err := OpenStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"oid-1", "oid-2"} {
+		if _, err := store.Upsert(TokenSet{AccessToken: "a", RefreshToken: "r", Email: id + "@example.com", HomeOID: id, ExpiresAt: time.Now().Add(time.Hour)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.SetScheduleEnabledBatch([]string{"oid-1", "missing"}, false); err == nil {
+		t.Fatal("missing account was accepted")
+	}
+	if !store.ScheduleEnabled("oid-1") || !store.ScheduleEnabled("oid-2") {
+		t.Fatal("failed batch partially changed scheduling state")
+	}
+	if err := store.SetScheduleEnabledBatch([]string{"oid-1", "oid-2"}, false); err != nil {
+		t.Fatal(err)
+	}
+	if store.ScheduleEnabled("oid-1") || store.ScheduleEnabled("oid-2") {
+		t.Fatal("valid batch did not update every account")
+	}
+}

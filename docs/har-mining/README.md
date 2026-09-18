@@ -1,6 +1,6 @@
 # HAR 逆向挖掘报告（脱敏版）
 
-本目录收录 8 份基于生产流量抓包（HAR）的 M365 Copilot Web 逆向报告。数据源为 2026-08-05 ~
+本目录收录基于生产流量抓包（HAR）的 M365 Copilot Web 逆向报告。数据源为 2026-08-05 ~
 2026-08-23 录制的 6 个 HAR 文件（约 2225 个 entry、903 帧 Chathub WebSocket 消息），
 覆盖正常聊天、临时会话、个性化设置、图片生成与限额触发等场景。
 
@@ -19,6 +19,8 @@
 | 06 | [06-timing-performance.md](06-timing-performance.md) | 13 次聊天分阶段延迟基线 + connpool 死代码 bug 发现 + 六项性能优化 | internal/chathub/connpool.go |
 | 07 | [07-errors-risk.md](07-errors-risk.md) | 风控三级分层结论（metering 软拒 → 能力终态码 → 硬封）+ 错误码全景 + 账号健康预警指标 | internal/web/errors.go、agent_ledger.go |
 | 08 | [08-telemetry-fingerprint.md](08-telemetry-fingerprint.md) | 遥测三路流/指纹链/variants 动态派生 + Go 客户端拟真度评分卡 + 最小拟真改动清单 | client.go（variants）、plugins.go |
+| 09 | [09-baseline-and-scope.md](09-baseline-and-scope.md) | 审计基线、范围、限制与证据边界 | 全局 |
+| 10 | [10-tool-protocol-status.md](10-tool-protocol-status.md) | 工具协议已观测事实、实现推断、未验证能力与发布决策 | tools.go、server.go、协议兼容层 |
 
 ## 建议阅读顺序
 

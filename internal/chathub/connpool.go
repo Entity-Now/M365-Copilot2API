@@ -33,6 +33,7 @@ type ConnPool struct {
 	dialer *websocket.Dialer
 	header http.Header
 	stop   chan struct{}
+	close  sync.Once
 }
 
 func NewConnPool(dialer *websocket.Dialer, header http.Header) *ConnPool {
@@ -80,7 +81,18 @@ func (p *ConnPool) startPark(key string, pc *pooledConn) {
 			if pc.taken.Load() {
 				select {
 				case pc.frames <- msg:
+				case <-p.stop:
+					_ = pc.conn.Close()
+					close(pc.frames)
+					return
 				case <-time.After(30 * time.Second):
+					err := context.DeadlineExceeded
+					_ = pc.conn.Close()
+					select {
+					case pc.errs <- err:
+					default:
+					}
+					close(pc.frames)
 					return
 				}
 			}
@@ -238,16 +250,18 @@ func (p *ConnPool) GC() {
 }
 
 func (p *ConnPool) Close() {
-	close(p.stop)
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	for k, conns := range p.conns {
-		for _, pc := range conns {
-			pc.taken.Store(true)
-			pc.conn.Close()
+	p.close.Do(func() {
+		close(p.stop)
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		for k, conns := range p.conns {
+			for _, pc := range conns {
+				pc.taken.Store(true)
+				pc.conn.Close()
+			}
+			delete(p.conns, k)
 		}
-		delete(p.conns, k)
-	}
+	})
 }
 
 func (p *ConnPool) Stats() map[string]any {

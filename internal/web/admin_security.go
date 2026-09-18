@@ -306,13 +306,13 @@ func clientIP(r *http.Request) string {
 }
 func validNewAdminPassword(p string, history []string) error {
 	if p == defaultAdminPassword {
-		return errors.New("new password must not be the default password")
+		return errors.New("password_is_default")
 	}
 	if len(p) < 12 {
-		return errors.New("new password must be at least 12 characters")
+		return errors.New("password_too_short")
 	}
 	if len(p) > 72 {
-		return errors.New("new password is too long (max 72 characters due to bcrypt limit)")
+		return errors.New("password_too_long")
 	}
 	if len(p) > 256 {
 		return errors.New("new password is too long")
@@ -344,26 +344,26 @@ func validNewAdminPassword(p string, history []string) error {
 		classes++
 	}
 	if classes < 3 {
-		return errors.New("new password must contain at least 3 of 4 character classes (lower, upper, digit, special)")
+		return errors.New("password_needs_complexity")
 	}
 	lower := strings.ToLower(p)
 	for _, bad := range commonPasswordBlacklist {
 		if lower == bad || strings.Contains(lower, bad) {
-			return errors.New("new password is too common or contains a blacklisted word")
+			return errors.New("password_common_or_blacklisted")
 		}
 	}
 	if isCommonSequence(p) {
-		return errors.New("new password contains a common sequence or repeated characters")
+		return errors.New("password_common_sequence")
 	}
 	if score := zxcvbnScore(p); score < 3 {
-		return errors.New("new password is too weak (zxcvbn score < 3), choose a stronger password")
+		return errors.New("password_too_weak")
 	}
 	for _, h := range history {
 		if h == "" {
 			continue
 		}
 		if checkPassword(h, p) {
-			return errors.New("new password was used recently, choose a different one")
+			return errors.New("password_recently_used")
 		}
 	}
 	return nil
@@ -537,7 +537,7 @@ func (s *Server) adminChangePassword(w http.ResponseWriter, r *http.Request) {
 	s.mu.Unlock()
 	if !checkPassword(currentHash, b.Current) {
 		auditLog(r, "admin_password_change_failed", "current password invalid")
-		writeOpenAIError(w, 401, "auth_error", "current password is invalid")
+		writeOpenAIError(w, 401, "auth_error", "current_password_invalid")
 		return
 	}
 	allHistory := append([]string{currentHash}, history...)

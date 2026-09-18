@@ -8,30 +8,10 @@ type Tool struct {
 }
 
 func clientPlugins(tools []Tool, mcpServerURL string) []any {
-	plugins := make([]any, 0, len(tools)+2)
-	if mcpServerURL == "" && len(tools) == 0 {
-		plugins = append(plugins, map[string]any{"Id": "BingWebSearch", "Source": "BuiltIn"})
-	}
-	if mcpServerURL != "" {
-		plugins = append(plugins, map[string]any{
-			"Id":                "mcp-gateway",
-			"Source":            "MCPServer",
-			"Description":       "MCP Gateway tools",
-			"Transport":         "mcp",
-			"TransportUrl":      mcpServerURL,
-			"TransportProtocol": "https://copilot.microsoft.com/schemas/plugins/local/transport/1.0",
-		})
-	}
-	for _, t := range tools {
-		var f struct {
-			Name        string          `json:"name"`
-			Description string          `json:"description"`
-			Parameters  json.RawMessage `json:"parameters"`
-		}
-		if json.Unmarshal(t.Function, &f) != nil || f.Name == "" {
-			continue
-		}
-		plugins = append(plugins, map[string]any{"Id": f.Name, "Source": "API", "Description": f.Description, "Parameters": f.Parameters})
-	}
-	return plugins
+	// The audited HAR set verifies only the built-in BingWebSearch declaration.
+	// It does not verify the former API-plugin or synthetic MCPServer payload
+	// shapes, so client tools must stay on the gateway's validated router path.
+	_ = tools
+	_ = mcpServerURL
+	return []any{map[string]any{"Id": "BingWebSearch", "Source": "BuiltIn"}}
 }

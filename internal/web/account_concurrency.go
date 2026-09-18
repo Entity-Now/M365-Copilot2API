@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"errors"
 	"os"
 	"strconv"
 	"strings"
@@ -12,11 +13,13 @@ import (
 
 const defaultAccountConcurrency = 8
 
+var errAccountConcurrencyQueueFull = errors.New("account concurrency queue is full")
+
 type accountConcurrency struct {
 	mu       sync.Mutex
 	limit    int
 	inflight map[string]int
-	changed  chan struct{}
+	waiters  map[string][]chan struct{}
 }
 
 func newAccountConcurrency() *accountConcurrency {
@@ -26,7 +29,7 @@ func newAccountConcurrency() *accountConcurrency {
 			limit = parsed
 		}
 	}
-	return &accountConcurrency{limit: limit, inflight: map[string]int{}, changed: make(chan struct{})}
+	return &accountConcurrency{limit: limit, inflight: map[string]int{}, waiters: map[string][]chan struct{}{}}
 }
 
 func (c *accountConcurrency) Available(accountID string) bool {
@@ -42,33 +45,71 @@ func (c *accountConcurrency) Acquire(ctx context.Context, accountID string) (fun
 	if c == nil || accountID == "" {
 		return func() {}, nil
 	}
-	for {
+	c.mu.Lock()
+	if c.inflight[accountID] < c.limit && len(c.waiters[accountID]) == 0 {
+		c.inflight[accountID]++
+		c.mu.Unlock()
+		return c.releaseFunc(accountID), nil
+	}
+	if len(c.waiters[accountID]) >= c.limit*4 {
+		c.mu.Unlock()
+		return nil, errAccountConcurrencyQueueFull
+	}
+	wake := make(chan struct{})
+	c.waiters[accountID] = append(c.waiters[accountID], wake)
+	c.mu.Unlock()
+
+	select {
+	case <-wake:
+		return c.releaseFunc(accountID), nil
+	case <-ctx.Done():
 		c.mu.Lock()
-		if c.inflight[accountID] < c.limit {
-			c.inflight[accountID]++
-			c.mu.Unlock()
-			var once sync.Once
-			return func() {
-				once.Do(func() {
-					c.mu.Lock()
-					if c.inflight[accountID] <= 1 {
-						delete(c.inflight, accountID)
-					} else {
-						c.inflight[accountID]--
-					}
-					close(c.changed)
-					c.changed = make(chan struct{})
-					c.mu.Unlock()
-				})
-			}, nil
+		waiters := c.waiters[accountID]
+		for i, waiter := range waiters {
+			if waiter == wake {
+				waiters = append(waiters[:i], waiters[i+1:]...)
+				break
+			}
 		}
-		changed := c.changed
+		if len(waiters) == 0 {
+			delete(c.waiters, accountID)
+		} else {
+			c.waiters[accountID] = waiters
+		}
 		c.mu.Unlock()
 		select {
-		case <-ctx.Done():
+		case <-wake:
+			return c.releaseFunc(accountID), nil
+		default:
 			return nil, ctx.Err()
-		case <-changed:
 		}
+	}
+}
+
+func (c *accountConcurrency) releaseFunc(accountID string) func() {
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			c.mu.Lock()
+			waiters := c.waiters[accountID]
+			if len(waiters) > 0 {
+				next := waiters[0]
+				if len(waiters) == 1 {
+					delete(c.waiters, accountID)
+				} else {
+					c.waiters[accountID] = waiters[1:]
+				}
+				close(next)
+				c.mu.Unlock()
+				return
+			}
+			if c.inflight[accountID] <= 1 {
+				delete(c.inflight, accountID)
+			} else {
+				c.inflight[accountID]--
+			}
+			c.mu.Unlock()
+		})
 	}
 }
 
@@ -98,7 +139,7 @@ func (s *Server) accountAvailable(accountID string) bool {
 	if s.tokens != nil && !s.tokens.ScheduleEnabled(accountID) {
 		return false
 	}
-	return s.accountPool.Available(accountID) && s.accountConcurrency.Available(accountID)
+	return s.accountConcurrency.Available(accountID) && s.accountPool.TryAcquire(accountID)
 }
 
 func (s *Server) accountClient(accountID string) *chathub.Client {

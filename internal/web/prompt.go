@@ -21,7 +21,7 @@ func flattenAtomsAlias(atoms []contextAtom, attachments []chathub.Attachment) (s
 }
 
 func flattenPromptMessages(messages []oaiMsg, attachments []chathub.Attachment) (string, []chathub.Attachment) {
-	var systemParts []string
+	var instructionParts []string
 	var rest []oaiMsg
 	for _, m := range messages {
 		role := strings.ToLower(strings.TrimSpace(m.Role))
@@ -30,16 +30,16 @@ func flattenPromptMessages(messages []oaiMsg, attachments []chathub.Attachment) 
 			attachments = append(attachments, sysFiles...)
 			txt = strings.TrimSpace(txt)
 			if txt != "" {
-				systemParts = append(systemParts, txt)
+				instructionParts = append(instructionParts, fmt.Sprintf("[%s]\n%s", role, txt))
 			}
 		} else {
 			rest = append(rest, m)
 		}
 	}
 	var b strings.Builder
-	if len(systemParts) > 0 {
-		b.WriteString("\n[system]\n")
-		b.WriteString(strings.Join(systemParts, "\n"))
+	if len(instructionParts) > 0 {
+		b.WriteString("\n")
+		b.WriteString(strings.Join(instructionParts, "\n"))
 		b.WriteString("\n")
 	}
 	for _, m := range rest {
@@ -68,7 +68,6 @@ func flattenPromptMessages(messages []oaiMsg, attachments []chathub.Attachment) 
 			continue
 		}
 		if role == "tool" {
-			txt = compactToolResult(txt, 4000)
 			b.WriteString(fmt.Sprintf("\n[tool result id=%s]\n%s\n", m.ToolCallID, txt))
 			continue
 		}

@@ -55,7 +55,7 @@ M365 Copilot2API 是一个用 Go 编写的自托管网关，把微软 365 Copilo
 | OpenAI Responses `/v1/responses` | 兼容 Responses 协议（Codex 等客户端） |
 | Anthropic 兼容 `/v1/messages` | Claude Code / Cursor 直连 |
 | SSE 流式输出 | 逐字实时返回，`stream: true` |
-| 工具调用转换 | OpenAI function calling ⇄ M365 工具协议，`router` / `native` 两种规划模式 |
+| 工具调用转换 | OpenAI、Responses 与 Anthropic 工具调用经网关结构化路由、Schema 校验和 call ID 关联；未验证的旧插件/native 模式已禁用 |
 | 内容键会话复用 | 以对话上下文为键复用云端对话，命中时只发送增量消息（类似 DeepSeek 上下文缓存） |
 | 会话显式绑定 | `X-M365-Session-Id` 请求头精确指定要继续的会话 |
 | 自动清理 | 按闲置时间（默认 2h）或保留数量回收云端对话 |
@@ -315,9 +315,11 @@ python manage.py stop     # 停止服务
 
 ### 工具与推理
 
+客户端声明的工具优先于第三方工具，官方云端能力仅作为兜底。当前 HAR 仅验证了内置 `BingWebSearch` 声明，没有验证稳定的原生客户端工具调用 ID、参数增量和工具结果续接协议。因此网关不会把客户端工具伪装成旧式 `Source:API` 插件，也不会向 ChatHub 合成 `MCPServer` 插件。证据边界见 `docs/har-mining/10-tool-protocol-status.md`。
+
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
-| `M365_TOOL_PLANNING_MODE` | `router` | 工具规划模式：`router`（网关路由规划）/ `native`（云端原生规划） |
+| `M365_TOOL_PLANNING_MODE` | `router` | 工具规划模式。当前仅接受经过验证的 `router` 路径；`native` 输入会安全归一化为 `router`，不会合成上游插件或静默回退 |
 | `M365_MAX_TOOL_CALLS_PER_TURN` | `1` | 单轮最多并行工具调用数（有副作用操作自动降为串行） |
 | `M365_MAX_TOOL_ROUNDS` | `16` | 单次请求最大工具轮次 |
 | `M365_CONTEXT_WINDOW` | `128000` | 上下文窗口 |

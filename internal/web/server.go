@@ -18,6 +18,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -32,6 +33,13 @@ type pendingPKCE struct {
 	Account     any
 	Error       string
 	RedirectURI string
+}
+
+type pendingGraphAuthorization struct {
+	Verifier     string
+	Created      time.Time
+	AdminSession string
+	RedirectURI  string
 }
 
 func (s *Server) getRateLimitCooldown() time.Duration {
@@ -55,8 +63,6 @@ func (s *Server) featureFlags() chathub.FeatureFlags {
 		SydneyReconnect:      cfg.EnableSydneyReconnect,
 	}
 }
-
-const maxAccountProbe = 16
 
 const rateLimitProbePrompt = "Reply with exactly: OK"
 
@@ -82,6 +88,17 @@ func (s *Server) logThrottlingWarning(accountID string, throttling any) {
 	}
 }
 
+func shouldRotateConversation(historyLen, maxMessages int) bool {
+	return maxMessages > 0 && historyLen >= maxMessages
+}
+
+func shouldRotateResolvedConversation(historyLen, requestLen, maxMessages int) bool {
+	if requestLen > historyLen {
+		historyLen = requestLen
+	}
+	return shouldRotateConversation(historyLen, maxMessages)
+}
+
 func (s *Server) markAccountResult(accountID string, err error) {
 	if s == nil || s.accountPool == nil || accountID == "" {
 		return
@@ -104,13 +121,18 @@ func (s *Server) recordAccountChatResult(accountID string, result chathub.Result
 	}
 	meterError := ""
 	hasAccess := true
+	hasMetering := false
 	if result.MeteringInformation != nil {
 		if raw, marshalErr := json.Marshal(result.MeteringInformation); marshalErr == nil {
+			hasMetering = true
 			meterError, hasAccess = ParseMetering(accountID, json.RawMessage(raw))
 			applyMeteringCooldown(s.accountPool, accountID, meterError)
 		}
 	}
-	s.accountPool.UpdateMetering(accountID, meterError, hasAccess, remainingAllowances(result.Throttling))
+	remaining := remainingAllowances(result.Throttling)
+	if hasMetering || len(remaining) > 0 {
+		s.accountPool.UpdateMetering(accountID, meterError, hasAccess, remaining)
+	}
 }
 
 // confirmRateLimitNotice verifies a text-channel rate-limit notice with a
@@ -151,10 +173,12 @@ func (s *Server) confirmRateLimitNotice(ctx context.Context, acc auth.AccountTok
 
 type Server struct {
 	mu                   sync.Mutex
+	requestSlots         chan struct{}
 	tokens               *auth.Store
 	accountPool          *accountHealth
 	accountConcurrency   *accountConcurrency
 	pkce                 map[string]pendingPKCE
+	graphAuthorizations  map[string]pendingGraphAuthorization
 	chat                 *chathub.Client
 	proxyClients         sync.Map
 	sessions             *sessionStore
@@ -174,6 +198,7 @@ type Server struct {
 	usage                *usageLog
 	generatedImages      map[string]generatedImage
 	convCache            *conversationCache
+	cloudClients         *m365CloudClientManager
 	lastHealthyAccount   string
 }
 
@@ -244,11 +269,20 @@ func New() (*Server, error) {
 			sessionTTL = d
 		}
 	}
+	SetM365AuthStore(store)
+	maxConcurrentRequests := 128
+	if raw := strings.TrimSpace(os.Getenv("M365_MAX_CONCURRENT_REQUESTS")); raw != "" {
+		if parsed, parseErr := strconv.Atoi(raw); parseErr == nil && parsed > 0 {
+			maxConcurrentRequests = parsed
+		}
+	}
 	return &Server{
-		tokens:             store,
-		accountPool:        newAccountHealth(),
-		accountConcurrency: newAccountConcurrency(),
-		pkce:               map[string]pendingPKCE{},
+		requestSlots:        make(chan struct{}, maxConcurrentRequests),
+		tokens:              store,
+		accountPool:         newAccountHealth(),
+		accountConcurrency:  newAccountConcurrency(),
+		pkce:                map[string]pendingPKCE{},
+		graphAuthorizations: map[string]pendingGraphAuthorization{},
 		chat: func() *chathub.Client {
 			c := chathub.NewClient()
 			c.Trace = func(meta map[string]any) { fmt.Printf("[multimodal-trace] %s\\n", mustJSON(meta)) }
@@ -270,8 +304,11 @@ func New() (*Server, error) {
 		usage:                openUsageLog(),
 		generatedImages:      map[string]generatedImage{},
 		convCache:            newConversationCache(),
+		cloudClients:         newM365CloudClientManager(),
 	}, nil
 }
+
+func init() { SetM365AuthStore(nil) }
 
 func (s *Server) StartConvCacheGC() {
 	go func() {
@@ -315,19 +352,23 @@ func (s *Server) PreheatPool() {
 
 func (s *Server) InitM365CloudClient() {
 	accounts := s.tokens.List()
-	if len(accounts) == 0 {
+	if s.cloudClients == nil {
+		s.cloudClients = newM365CloudClientManager()
+	}
+	for _, acc := range accounts {
+		s.syncM365CloudClient(acc)
+	}
+}
+
+func (s *Server) syncM365CloudClient(acc auth.AccountToken) {
+	if s == nil {
 		return
 	}
-	acc := accounts[0]
-	clientID := os.Getenv("M365_CLIENT_ID")
-	if clientID == "" {
-		clientID = acc.ClientID
+	if s.cloudClients == nil {
+		s.cloudClients = newM365CloudClientManager()
 	}
-	if clientID == "" {
-		clientID = auth.DefaultClientID
-	}
-	InitM365CloudClient(clientID, acc.TID, acc.RefreshToken)
-	log.Printf("[m365-cloud] client initialized for account %s", acc.Email)
+	clientID := firstNonEmpty(os.Getenv("M365_CLIENT_ID"), acc.ClientID, auth.DefaultClientID)
+	s.cloudClients.sync(acc.ID, clientID, acc.TID, acc.RefreshToken)
 }
 
 func (s *Server) RefreshExpiredTokens() {
@@ -359,6 +400,8 @@ func (s *Server) Routes() http.Handler {
 	m.HandleFunc("/api/admin/deployment/check", s.deploymentCheck)
 	m.HandleFunc("/api/admin/debug/logs", s.debugList)
 	m.HandleFunc("/api/admin/debug/detail", s.debugDetail)
+	// Microsoft Graph batch user creation is temporarily disabled and will be restored in a later version.
+	// Keep the implementation files intact, but do not register readiness, authorization, or batch routes.
 	m.HandleFunc("/api/health", s.health)
 	m.HandleFunc("/api/version", s.version)
 	m.HandleFunc("/api/update", s.update)
@@ -392,7 +435,8 @@ func (s *Server) Routes() http.Handler {
 	m.HandleFunc("/api/plugins", s.plugins)
 	m.HandleFunc("/v1/models", s.openaiModels)
 	m.HandleFunc("/v1/chat/completions", s.openaiChat)
-	m.HandleFunc("/v1/responses", s.responses)
+	m.HandleFunc("/v1/responses", s.responsesDisabled)
+	m.HandleFunc("/responses", s.responsesDisabled)
 	m.HandleFunc("/v1/mcp/sse", mcp.HandleSSE)
 	m.HandleFunc("/v1/mcp/message", mcp.HandleMessage)
 	m.HandleFunc("/v1/mcp/tools", mcp.HandleToolsList)
@@ -405,7 +449,23 @@ func (s *Server) Routes() http.Handler {
 	m.HandleFunc("/v1/memory/instructions/", s.handleMemoryInstructionsID)
 	m.HandleFunc("/v1/memory/settings", s.handleMemorySettings)
 	m.HandleFunc("/", s.rootPage)
-	return recoverPanics(requestID(httpTrace(securityHeaders(s.adminMiddleware(s.debugMiddleware(m))))))
+	return recoverPanics(requestID(httpTrace(securityHeaders(s.limitConcurrency(s.adminMiddleware(s.debugMiddleware(m)))))))
+}
+
+func (s *Server) limitConcurrency(next http.Handler) http.Handler {
+	if s.requestSlots == nil {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case s.requestSlots <- struct{}{}:
+			defer func() { <-s.requestSlots }()
+			next.ServeHTTP(w, r)
+		default:
+			w.Header().Set("Retry-After", "1")
+			writeOpenAIError(w, http.StatusServiceUnavailable, "server_overloaded", "server is overloaded; retry shortly")
+		}
+	})
 }
 
 func (s *Server) adminMiddleware(next http.Handler) http.Handler {
@@ -418,7 +478,7 @@ func (s *Server) adminMiddleware(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		if strings.HasPrefix(r.URL.Path, "/v1/") {
+		if strings.HasPrefix(r.URL.Path, "/v1/") || r.URL.Path == "/responses" {
 			if !s.validAPIKey(r) {
 				writeOpenAIError(w, http.StatusUnauthorized, "auth_error", "valid API key required")
 				return
@@ -497,7 +557,7 @@ func (s *Server) adminLogin(w http.ResponseWriter, r *http.Request) {
 		seconds := int(wait.Seconds()) + 1
 		w.Header().Set("Retry-After", fmt.Sprint(seconds))
 		auditLog(r, "admin_login_locked", fmt.Sprintf("locked wait=%ds", seconds))
-		writeOpenAIError(w, http.StatusTooManyRequests, "rate_limit_error", "too many failed login attempts; try again later")
+		writeOpenAIError(w, http.StatusTooManyRequests, "rate_limit_error", "admin_login_locked")
 		return
 	}
 	var body struct {
@@ -512,7 +572,7 @@ func (s *Server) adminLogin(w http.ResponseWriter, r *http.Request) {
 	if decodeErr != nil || body.Password == "" || !checkPassword(passwordHash, body.Password) {
 		s.recordLoginFailure(ip, now)
 		auditLog(r, "admin_login_failed", "invalid password")
-		writeOpenAIError(w, http.StatusUnauthorized, "auth_error", "invalid administrator password")
+		writeOpenAIError(w, http.StatusUnauthorized, "auth_error", "invalid_administrator_password")
 		return
 	}
 	s.clearLoginFailures(ip)
@@ -599,15 +659,16 @@ func (s *Server) adminKeys(w http.ResponseWriter, r *http.Request) {
 		jsonOut(w, map[string]string{"status": "deleted"})
 	case http.MethodPut:
 		var b struct {
-			ID      string `json:"id"`
-			Name    string `json:"name"`
-			Revoked *bool  `json:"revoked"`
+			ID         string   `json:"id"`
+			Name       string   `json:"name"`
+			Revoked    *bool    `json:"revoked"`
+			AccountIDs []string `json:"accountIds"`
 		}
 		if json.NewDecoder(r.Body).Decode(&b) != nil || b.ID == "" {
 			writeOpenAIError(w, 400, "invalid_request_error", "bad json")
 			return
 		}
-		updated, e := s.apiKeys.update(b.ID, b.Name, b.Revoked)
+		updated, e := s.apiKeys.update(b.ID, b.Name, b.Revoked, b.AccountIDs)
 		if e != nil {
 			writeOpenAIError(w, http.StatusInternalServerError, "internal_error", e.Error())
 			return
@@ -694,6 +755,7 @@ func (s *Server) accounts(w http.ResponseWriter, r *http.Request) {
 		MeterError         string         `json:"meterError,omitempty"`
 		MeterHasAccess     bool           `json:"meterHasAccess"`
 		RemainingAllowance map[string]int `json:"remainingAllowance,omitempty"`
+		Capabilities       map[string]any `json:"capabilities"`
 		Concurrency        int            `json:"concurrency"`
 		OID                string         `json:"oid,omitempty"`
 		TID                string         `json:"tid,omitempty"`
@@ -726,6 +788,14 @@ func (s *Server) accounts(w http.ResponseWriter, r *http.Request) {
 			imageLimited = s.accountPool.ImageLimited(a.ID)
 		}
 		concurrency := s.accountConcurrency.Inflight(a.ID)
+		capabilities := map[string]any{
+			"chat":             a.OID != "" && a.TID != "",
+			"tokenRefresh":     a.RefreshToken != "",
+			"scheduling":       true,
+			"meteringObserved": len(remainingAllowance) > 0 || meterError != "",
+			"imageApiVerified": false,
+			"source":           "local_observation",
+		}
 		out = append(out, view{
 			ID: a.ID, Email: a.Email, DisplayName: a.DisplayName,
 			Status: status, ScheduleEnabled: !a.ScheduleDisabled, CallCount: callCount, RateLimited: rateLimited,
@@ -734,8 +804,9 @@ func (s *Server) accounts(w http.ResponseWriter, r *http.Request) {
 			AuthFailReason: authFailReason,
 			CooldownUntil:  cooldownUntil, Throttling: throttling,
 			MeterError: meterError, MeterHasAccess: meterHasAccess, RemainingAllowance: remainingAllowance,
-			Concurrency: concurrency,
-			OID:         a.OID, TID: a.TID,
+			Capabilities: capabilities,
+			Concurrency:  concurrency,
+			OID:          a.OID, TID: a.TID,
 			ExpiresAt: a.ExpiresAt, UpdatedAt: a.UpdatedAt, BoundProxy: a.BoundProxy,
 		})
 	}
@@ -759,6 +830,7 @@ func (s *Server) refreshAccount(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIError(w, http.StatusBadGateway, "token_refresh_error", err.Error())
 		return
 	}
+	s.syncM365CloudClient(acc)
 	jsonOut(w, map[string]any{"status": "refreshed", "account": map[string]any{
 		"id": acc.ID, "email": acc.Email, "displayName": acc.DisplayName,
 		"status": acc.Status, "expiresAt": acc.ExpiresAt, "updatedAt": acc.UpdatedAt,
@@ -771,18 +843,43 @@ func (s *Server) scheduleAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		ID      string `json:"id"`
-		Enabled bool   `json:"enabled"`
+		ID      string   `json:"id"`
+		IDs     []string `json:"ids"`
+		Enabled bool     `json:"enabled"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.ID) == "" {
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "bad json")
 		return
 	}
-	if err := s.tokens.SetScheduleEnabled(strings.TrimSpace(body.ID), body.Enabled); err != nil {
+	ids := body.IDs
+	if id := strings.TrimSpace(body.ID); id != "" {
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "id or ids required")
+		return
+	}
+	cleanIDs := make([]string, 0, len(ids))
+	seen := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; !ok {
+			seen[id] = struct{}{}
+			cleanIDs = append(cleanIDs, id)
+		}
+	}
+	if len(cleanIDs) == 0 {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "id or ids required")
+		return
+	}
+	if err := s.tokens.SetScheduleEnabledBatch(cleanIDs, body.Enabled); err != nil {
 		writeOpenAIError(w, http.StatusNotFound, "not_found", err.Error())
 		return
 	}
-	jsonOut(w, map[string]any{"status": "updated", "scheduleEnabled": body.Enabled})
+	jsonOut(w, map[string]any{"status": "updated", "updated": len(cleanIDs), "scheduleEnabled": body.Enabled})
 }
 
 func (s *Server) tokenHealth(w http.ResponseWriter, r *http.Request) {
@@ -848,6 +945,7 @@ func (s *Server) deleteAccount(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIError(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
+	s.cloudClients.remove(body.ID)
 	jsonOut(w, map[string]string{"status": "deleted"})
 }
 
@@ -878,6 +976,7 @@ func (s *Server) provisionAccount(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIError(w, http.StatusInternalServerError, "upsert_error", err.Error())
 		return
 	}
+	s.syncM365CloudClient(acc)
 	jsonOut(w, map[string]any{"status": "provisioned", "account": map[string]any{
 		"id": acc.ID, "email": acc.Email, "displayName": acc.DisplayName,
 		"status": acc.Status, "expiresAt": acc.ExpiresAt,
@@ -1055,9 +1154,21 @@ func (s *Server) callbackPKCE(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIError(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
+	s.syncM365CloudClient(acc)
+	memoryDisabled := false
+	memoryError := ""
+	memoryCtx, cancelMemory := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancelMemory()
+	if _, err := disableAndVerifyMemory(memoryCtx, acc); err != nil {
+		memoryError = err.Error()
+		log.Printf("[personalization] account=%s disable memory failed: %v", acc.Email, err)
+	} else {
+		memoryDisabled = true
+		log.Printf("[personalization] account=%s saved memory and history insights disabled", acc.Email)
+	}
 	s.mu.Lock()
 	p.Status = "authenticated"
-	p.Account = map[string]any{"id": acc.ID, "email": acc.Email, "displayName": acc.DisplayName, "status": acc.Status, "oid": acc.OID, "tid": acc.TID}
+	p.Account = map[string]any{"id": acc.ID, "email": acc.Email, "displayName": acc.DisplayName, "status": acc.Status, "oid": acc.OID, "tid": acc.TID, "memoryDisabled": memoryDisabled, "memoryError": memoryError}
 	s.pkce[state] = p
 	s.mu.Unlock()
 	// Browser loopback callbacks should finish in a friendly page instead of
@@ -1068,8 +1179,10 @@ func (s *Server) callbackPKCE(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jsonOut(w, map[string]any{
-		"status":  "authenticated",
-		"account": map[string]any{"id": acc.ID, "email": acc.Email, "displayName": acc.DisplayName, "status": acc.Status, "oid": acc.OID, "tid": acc.TID},
+		"status":          "authenticated",
+		"memory_disabled": memoryDisabled,
+		"memory_error":    memoryError,
+		"account":         map[string]any{"id": acc.ID, "email": acc.Email, "displayName": acc.DisplayName, "status": acc.Status, "oid": acc.OID, "tid": acc.TID},
 	})
 }
 
@@ -1079,10 +1192,12 @@ func (s *Server) resolveAccount(accountID string) (auth.AccountToken, error) {
 		s.mu.Lock()
 		preferred := s.lastHealthyAccount
 		s.mu.Unlock()
-		if preferred != "" && s.accountAvailable(preferred) && s.accountPool.Available(preferred) && s.accountConcurrency.Available(preferred) {
+		if preferred != "" && s.accountAvailable(preferred) {
 			if acc, err := s.tokens.EnsureValid(preferred); err == nil {
 				accountID = preferred
 				return acc, nil
+			} else {
+				s.accountPool.ReleaseProbe(preferred)
 			}
 		}
 		// No preferred account or it's unavailable; fall back to round-robin
@@ -1091,17 +1206,19 @@ func (s *Server) resolveAccount(accountID string) (auth.AccountToken, error) {
 			return auth.AccountToken{}, fmt.Errorf("no accounts; login first")
 		}
 		accountID = acc.ID
-		for i := 0; !s.accountAvailable(accountID) && i < maxAccountProbe; i++ {
+		selected := s.accountAvailable(accountID)
+		for i, count := 0, len(s.tokens.List()); !selected && i < count; i++ {
 			acc, ok = s.tokens.Next()
 			if !ok {
 				break
 			}
 			accountID = acc.ID
+			selected = s.accountAvailable(accountID)
 		}
 		if !s.tokens.ScheduleEnabled(accountID) {
 			return auth.AccountToken{}, fmt.Errorf("no accounts enabled for scheduling")
 		}
-		if !s.accountPool.Available(accountID) {
+		if !selected {
 			until := s.accountPool.EarliestRecovery()
 			retry := int(time.Until(until).Seconds())
 			if retry < 5 {
@@ -1109,11 +1226,11 @@ func (s *Server) resolveAccount(accountID string) (auth.AccountToken, error) {
 			}
 			return auth.AccountToken{}, &UpstreamHTTPError{Status: 429, RetryAfter: retry, Body: "all accounts are cooling down; try again later"}
 		}
-		if !s.accountConcurrency.Available(accountID) {
-			return auth.AccountToken{}, &UpstreamHTTPError{Status: 429, RetryAfter: 1, Body: "all accounts are at their concurrency limit; try again shortly"}
-		}
 	}
 	result, err := s.tokens.EnsureValid(accountID)
+	if err != nil && s.accountPool != nil {
+		s.accountPool.ReleaseProbe(accountID)
+	}
 	if err == nil {
 		s.mu.Lock()
 		s.lastHealthyAccount = accountID
@@ -1122,11 +1239,50 @@ func (s *Server) resolveAccount(accountID string) (auth.AccountToken, error) {
 	return result, err
 }
 
+func (s *Server) resolveBoundAccount(accountIDs []string, accountID string) (auth.AccountToken, error) {
+	allowed := make(map[string]struct{}, len(accountIDs))
+	for _, id := range accountIDs {
+		if id = strings.TrimSpace(id); id != "" {
+			allowed[id] = struct{}{}
+		}
+	}
+	if accountID != "" {
+		if _, ok := allowed[accountID]; !ok {
+			return auth.AccountToken{}, ErrAccountNotBound
+		}
+		return s.resolveAccount(accountID)
+	}
+	for i, count := 0, len(s.tokens.List()); i < count; i++ {
+		acc, ok := s.tokens.Next()
+		if !ok {
+			break
+		}
+		if _, ok := allowed[acc.ID]; !ok || !s.tokens.ScheduleEnabled(acc.ID) || !s.accountAvailable(acc.ID) {
+			continue
+		}
+		result, err := s.tokens.EnsureValid(acc.ID)
+		if err != nil {
+			if s.accountPool != nil {
+				s.accountPool.ReleaseProbe(acc.ID)
+			}
+			continue
+		}
+		return result, nil
+	}
+	return auth.AccountToken{}, fmt.Errorf("no bound account available")
+}
+
 // nextHealthyAccount returns the next round-robin account that is still
 // healthy, skipping the given id first, and validates its token. Used by the
 // failover path after a rate-limited or auth-failed attempt.
-func (s *Server) nextHealthyAccount(avoidID string) (auth.AccountToken, error) {
-	for i := 0; i < maxAccountProbe; i++ {
+func (s *Server) nextHealthyAccount(avoidID string, accountIDs []string) (auth.AccountToken, error) {
+	allowed := make(map[string]struct{}, len(accountIDs))
+	for _, id := range accountIDs {
+		if id = strings.TrimSpace(id); id != "" {
+			allowed[id] = struct{}{}
+		}
+	}
+	for i, count := 0, len(s.tokens.List()); i < count; i++ {
 		acc, ok := s.tokens.Next()
 		if !ok {
 			return auth.AccountToken{}, fmt.Errorf("no accounts; login first")
@@ -1134,10 +1290,25 @@ func (s *Server) nextHealthyAccount(avoidID string) (auth.AccountToken, error) {
 		if avoidID != "" && acc.ID == avoidID {
 			continue
 		}
-		if !s.accountAvailable(acc.ID) {
+		if len(allowed) > 0 {
+			if _, ok := allowed[acc.ID]; !ok {
+				continue
+			}
+		}
+		if !s.tokens.ScheduleEnabled(acc.ID) || !s.accountAvailable(acc.ID) {
 			continue
 		}
-		return s.tokens.EnsureValid(acc.ID)
+		result, err := s.tokens.EnsureValid(acc.ID)
+		if err != nil {
+			if s.accountPool != nil {
+				s.accountPool.ReleaseProbe(acc.ID)
+			}
+			continue
+		}
+		return result, nil
+	}
+	if len(allowed) > 0 {
+		return auth.AccountToken{}, fmt.Errorf("no bound account available")
 	}
 	return auth.AccountToken{}, fmt.Errorf("no healthy account available for failover")
 }
@@ -1238,7 +1409,14 @@ func (s *Server) chatOnce(w http.ResponseWriter, r *http.Request) {
 			body.SessionID = firstNonEmpty(body.SessionID, v.SessionID)
 		}
 	}
-	acc, err := s.resolveAccount(body.AccountID)
+	accountIDs := s.apiKeys.accountIDs(rawAPIKey(r))
+	var acc auth.AccountToken
+	var err error
+	if len(accountIDs) > 0 {
+		acc, err = s.resolveBoundAccount(accountIDs, body.AccountID)
+	} else {
+		acc, err = s.resolveAccount(body.AccountID)
+	}
 	if err != nil {
 		writeUpstreamError(w, err)
 		return
@@ -1281,10 +1459,9 @@ func (s *Server) chatOnce(w http.ResponseWriter, r *http.Request) {
 		// requests fail over; an explicitly chosen account is respected, and a
 		// conversation-bound chat stays on its account.
 		if body.AccountID == "" && (IsRateLimited(err) || IsAuthFailure(err)) && (IsRateLimited(err) || body.ConversationID == "") {
-			next, nerr := s.nextHealthyAccount(acc.ID)
+			next, nerr := s.nextHealthyAccount(acc.ID, accountIDs)
 			if nerr == nil {
-				ctx2, cancel2 := context.WithTimeout(r.Context(), time.Duration(s.settings.get().ChatTimeoutSeconds)*time.Second)
-				defer cancel2()
+				ctx2 := ctx
 				res2, err2 := s.chatWithAccount(ctx2, next.ID, chathub.Account{AccessToken: next.AccessToken, OID: next.OID, TID: next.TID}, chathub.Request{
 					Text:                  text,
 					Tone:                  body.Tone,
@@ -1365,11 +1542,19 @@ func (s *Server) chatOnce(w http.ResponseWriter, r *http.Request) {
 // dropTransientConversation 异步删除 router/repair 轮创建的一次性云端对话，
 // 避免每请求都往 M365 对话列表塞一条记录。删除失败不阻塞请求，留给 auto_cleanup 兜底。
 func (s *Server) dropTransientConversation(conversationID string) {
-	if conversationID == "" || m365CloudClient == nil {
+	if conversationID == "" || s.cloudClients == nil {
+		return
+	}
+	session, ok := s.sessionResolver.GetConversationByID(conversationID)
+	if !ok {
+		return
+	}
+	client, ok := s.cloudClients.get(session.AccountID)
+	if !ok {
 		return
 	}
 	go func(id string) {
-		if err := m365CloudClient.DeleteConversation(id); err != nil {
+		if err := client.DeleteConversation(id); err != nil {
 			log.Printf("[transient-conv] delete failed id=%s err=%v", id, err)
 		}
 	}(conversationID)
@@ -1422,7 +1607,11 @@ func (s *Server) adminModelTest(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIError(w, http.StatusBadRequest, "account_error", "account missing oid/tid")
 		return
 	}
-	tone, _ := reasoningTone(b.Model, "")
+	tone, toneErr := reasoningTone(b.Model, "")
+	if toneErr != nil {
+		writeOpenAIError(w, http.StatusBadRequest, "model_not_found", toneErr.Error())
+		return
+	}
 	start := time.Now()
 	ctx, cancel := context.WithTimeout(r.Context(), time.Duration(s.settings.get().ChatTimeoutSeconds)*time.Second)
 	defer cancel()
@@ -1602,37 +1791,13 @@ func buildAnswerRequest(answerPrompt, tone string, body oaiReq, ledger agentLedg
 		answerPrompt += "\nFINAL ANSWER RULE: Report only actions supported by completed tool results. If the goal is not fully verified, state exactly what remains unconfirmed."
 	}
 	req := chathub.Request{Text: answerPrompt, Tone: tone, ConversationID: body.ConversationID, SessionID: body.SessionID, Attachments: body.Attachments, LicenseType: cfg.LicenseType, Scenario: cfg.Scenario, FeatureFlags: flags, Locale: locale.Locale, Market: locale.Market, TimeZone: locale.TimeZone, TimeZoneOffset: locale.TimeZoneOffset, DeviceOS: locale.DeviceOS, DisableMemory: disableMemory}
-	if planningMode == "native" {
-		req.Tools = body.Tools
-		req.ToolChoice = body.ToolChoice
-	}
-	if mcpServerURL != "" {
-		req.Tools = body.Tools
-		if req.ToolChoice == nil {
-			req.ToolChoice = body.ToolChoice
-		}
-	}
-	if len(body.Tools) > 0 {
-		mcpTools := make([]mcp.Tool, 0, len(body.Tools))
-		for _, t := range body.Tools {
-			var f struct {
-				Name, Description string
-				Parameters        json.RawMessage `json:"parameters"`
-			}
-			if json.Unmarshal(t.Function, &f) != nil || f.Name == "" {
-				continue
-			}
-			var schema map[string]any
-			if json.Unmarshal(f.Parameters, &schema) != nil {
-				schema = map[string]any{"type": "object"}
-			}
-			mcpTools = append(mcpTools, mcp.Tool{Name: f.Name, Description: f.Description, InputSchema: schema})
-		}
-		if len(mcpTools) > 0 {
-			mcp.GlobalToolRegistry.MergeTools(mcpTools)
-		}
-	}
-	req.MCPServerURL = mcpServerURL
+	// The audited HAR set does not contain a complete client-tool invocation
+	// lifecycle, stable call identifier, argument-delta contract, or tool-result
+	// continuation for the former native/API-plugin payload. Keep client tools
+	// on the gateway's validated router path and never silently forward an
+	// inferred plugin or MCP declaration to ChatHub.
+	_ = planningMode
+	_ = mcpServerURL
 	return req
 }
 
@@ -1689,21 +1854,9 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{"type": "tool_round_limit", "message": err.Error(), "completed_calls": len(activeLedger.Completed)}})
 		return
 	}
-	// Context budget sliding window: B = ContextWindow - MaxOutput - 512, atom-aware.
-	cfgBudget := s.settings.get()
-	budget := cfgBudget.ContextWindow - cfgBudget.MaxOutputTokens - 512
-	if budget < 1024 {
-		budget = 1024
-	}
-	if truncatedMsgs, truncated, budgetErr := slidingWindow(body.Messages, budget); budgetErr != nil {
-		w.Header().Set("X-M365-Context-Truncated", "1")
-		writeOpenAIError(w, 400, "context_length_exceeded", budgetErr.Error())
-		return
-	} else if truncated {
-		w.Header().Set("X-M365-Context-Truncated", "1")
-		log.Printf("[context-budget] id=%s truncated original=%d budget=%d truncated_msgs=%d", requestID, len(body.Messages), budget, len(truncatedMsgs))
-		body.Messages = truncatedMsgs
-	}
+	// Gateway must not truncate context. All messages are forwarded as-is and
+	// any limit is left to the upstream M365 service and the client's own
+	// budgeting. See https://github.com/HEXUXIU/M365-Copilot2API/issues/73
 	// Preserve role boundaries when adapting OpenAI messages to ChatHub's
 	// single message.text field. This keeps system/developer instructions,
 	// history, and the current user turn distinguishable.
@@ -1758,27 +1911,39 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[temp-session] copilot_temp_session=true, clearing conversation/session for one-shot request")
 	}
 	answerPrompt := prompt
+	convCacheNamespace := responseNamespace(tenantFromRequest(r), firstNonEmpty(responseSessionID(r), body.SessionKey, body.User))
 	resolvedConversationID := ""
 	if body.ConversationID == "" && len(body.Messages) > 0 && (body.Metadata == nil || !body.Metadata.CopilotTempSession) {
 		resolved := s.sessionResolver.Resolve(r, &body)
 		if !resolved.IsNew {
-			resolvedConversationID = resolved.ConversationID
-			body.ConversationID = resolved.ConversationID
-			body.SessionID = resolved.SessionID
-			body.AccountID = firstNonEmpty(body.AccountID, resolved.AccountID)
-			log.Printf("[session-resolver] matched=%s conversation=%s history=%d total=%d", resolved.MatchedBy, resolved.ConversationID, resolved.HistoryLen, len(body.Messages))
-			if resolved.HistoryLen > 0 && resolved.HistoryLen < len(body.Messages) {
-				incPrompt, incAtt := flattenPromptMessages(body.Messages[resolved.HistoryLen:], nil)
-				incPrompt = strings.TrimSpace(incPrompt)
-				if incPrompt != "" {
-					answerPrompt = incPrompt
-					body.Attachments = incAtt
+			if maxMessages := s.settings.get().MaxConversationMessages; shouldRotateResolvedConversation(resolved.HistoryLen, len(body.Messages), maxMessages) {
+				log.Printf("[session-resolver] rotating conversation=%s history=%d limit=%d", resolved.ConversationID, resolved.HistoryLen, maxMessages)
+				s.convCache.Invalidate(convCacheNamespace, resolved.AccountID, firstNonEmpty(body.Model, "m365-copilot"))
+			} else {
+				resolvedConversationID = resolved.ConversationID
+				body.ConversationID = resolved.ConversationID
+				body.SessionID = resolved.SessionID
+				body.AccountID = firstNonEmpty(body.AccountID, resolved.AccountID)
+				log.Printf("[session-resolver] matched=%s conversation=%s history=%d total=%d", resolved.MatchedBy, resolved.ConversationID, resolved.HistoryLen, len(body.Messages))
+				if resolved.HistoryLen > 0 && resolved.HistoryLen < len(body.Messages) {
+					incPrompt, incAtt := flattenPromptMessages(body.Messages[resolved.HistoryLen:], nil)
+					incPrompt = strings.TrimSpace(incPrompt)
+					if incPrompt != "" {
+						answerPrompt = incPrompt
+						body.Attachments = incAtt
+					}
 				}
 			}
 		}
 	}
 	accountID := body.AccountID
-	acc, err := s.resolveAccount(accountID)
+	accountIDs := s.apiKeys.accountIDs(rawAPIKey(r))
+	var acc auth.AccountToken
+	if len(accountIDs) > 0 {
+		acc, err = s.resolveBoundAccount(accountIDs, accountID)
+	} else {
+		acc, err = s.resolveAccount(accountID)
+	}
 	if err != nil {
 		log.Printf("[account-route] resolve failed requested=%q err=%v", accountID, err)
 		writeUpstreamErrorWithAccount(w, err, accountID)
@@ -1803,9 +1968,15 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	convCacheModel := firstNonEmpty(body.Model, "m365-copilot")
 	if body.ConversationID == "" && len(body.Messages) > 1 &&
 		(body.Metadata == nil || !body.Metadata.CopilotTempSession) {
-		sysHash := systemPromptHash(body.Messages)
-		if cached := s.convCache.Lookup(acc.ID, convCacheModel); cached != nil && cached.SystemPrompt == sysHash {
-			if len(body.Messages) > cached.MessageCount {
+		if cached := s.convCache.Lookup(convCacheNamespace, acc.ID, convCacheModel); cached != nil && !shouldRotateConversation(cached.MessageCount, s.settings.get().MaxConversationMessages) {
+			if len(body.Messages) == cached.MessageCount && messagesHash(body.Messages) == cached.MessagesHash {
+				// identical full context: reuse same conversation without re-sending history
+				body.ConversationID = cached.ConversationID
+				body.SessionID = cached.SessionID
+				answerPrompt = ""
+				convReused = true
+				log.Printf("[conv-cache] hit-identical account=%s model=%s conversation=%s", acc.ID, convCacheModel, cached.ConversationID)
+			} else if len(body.Messages) > cached.MessageCount && messagesHash(body.Messages[:cached.MessageCount]) == cached.MessagesHash {
 				incPrompt, incAtt := flattenPromptMessages(body.Messages[cached.MessageCount:], nil)
 				incPrompt = strings.TrimSpace(incPrompt)
 				if incPrompt != "" {
@@ -1834,16 +2005,12 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	if body.ToolChoice == nil && len(toolMaps) > 0 {
 		body.ToolChoice = "auto"
 	}
-	var mcpServerURL string
-	if len(toolMaps) > 0 {
-		scheme := "http"
-		if r.TLS != nil {
-			scheme = "https"
-		}
-		mcpServerURL = fmt.Sprintf("%s://%s/v1/mcp/sse", scheme, r.Host)
-		log.Printf("[mcp] tools=%d mcp_gateway=%s", len(toolMaps), mcpServerURL)
-	}
+	// Do not synthesize an upstream MCPServer plugin URL. The local MCP endpoint
+	// remains available to MCP clients, while OpenAI/Responses/Anthropic tools
+	// are selected through the validated router and correlated by client call ID.
+	mcpServerURL := ""
 	validateCalls := func(stage string, calls []detectedToolCall) ([]detectedToolCall, int) {
+		calls = dedupeToolCalls(calls)
 		valid, rejected := validateDetectedToolCalls(calls, toolMaps, body.ToolChoice)
 		for _, call := range rejected {
 			log.Printf("[tool-validation] id=%s stage=%s rejected_name=%q reason=%q", requestID, stage, call.Name, call.Reason)
@@ -1860,67 +2027,64 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	// The stream is opened by the actual response path below. Do not emit a
 	// tool preamble here: a request may contain tools in its schema while still
 	// being an ordinary text question.
-	// Streaming requests must not wait for the synchronous tool router. This
-	// path forwards ordinary upstream text deltas immediately; tool routing for
-	// non-streaming requests remains below until the event-level tool protocol
-	// is available end-to-end.
-	if planningMode == "router" && body.Stream && len(toolMaps) > 0 && fmt.Sprint(body.ToolChoice) != "none" {
-		// Preserve the existing validated tool router for streaming tool turns.
-		// Only fall through to text streaming when the router explicitly selects
-		// no tool; this prevents a natural-language preamble from becoming a
-		// completed assistant turn with the actual call lost.
+	// Ask the upstream model to select and validate the next tool. The gateway
+	// remains tool-agnostic; it only validates and serializes the decision.
+	if planningMode == "router" && len(toolMaps) > 0 && fmt.Sprint(body.ToolChoice) != "none" {
 		routePrompt := modelToolRouterPrompt(answerPrompt+"\n"+ledger.RouterContext(), toolMaps, body.ToolChoice)
-		log.Printf("[req-trace] id=%s stage=router_start prompt_len=%d", requestID, len(routePrompt))
 		routeRes, routeErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: routePrompt, Tone: tone, Attachments: body.Attachments, LicenseType: toolCfg.LicenseType, Scenario: toolCfg.Scenario})
-		log.Printf("[req-trace] id=%s stage=router_return elapsed_ms=%d err=%t", requestID, time.Since(startedAt).Milliseconds(), routeErr != nil)
-		// Router turns run in a throwaway cloud conversation that is never
-		// reused by the answer turn; delete it so the conversation list does
-		// not accumulate one entry per routed request.
-		if routeErr == nil && routeRes.ConversationID != "" {
-			s.dropTransientConversation(routeRes.ConversationID)
-		}
 		if routeErr != nil {
-			if IsRateLimited(routeErr) && body.AccountID == "" {
-				if next, nerr := s.nextHealthyAccount(acc.ID); nerr == nil {
-					s.accountPool.MarkFailure(acc.ID, routeErr, s.getRateLimitCooldown())
-					routeRes2, routeErr2 := s.chatWithAccount(ctx, next.ID, chathub.Account{AccessToken: next.AccessToken, OID: next.OID, TID: next.TID}, chathub.Request{Text: routePrompt, Tone: tone, Attachments: body.Attachments, LicenseType: toolCfg.LicenseType, Scenario: toolCfg.Scenario})
-					if routeErr2 == nil {
-						routeRes = routeRes2
+			if body.AccountID == "" && (IsRateLimited(routeErr) || IsAuthFailure(routeErr)) {
+				tried := map[string]bool{acc.ID: true}
+				curID := acc.ID
+				for range s.tokens.List() {
+					next, nerr := s.nextHealthyAccount(curID, accountIDs)
+					if nerr != nil {
+						break
+					}
+					if tried[next.ID] {
+						break
+					}
+					tried[next.ID] = true
+					if res2, err2 := s.chatWithAccount(ctx, next.ID, chathub.Account{AccessToken: next.AccessToken, OID: next.OID, TID: next.TID}, chathub.Request{Text: routePrompt, Tone: tone, Attachments: body.Attachments, LicenseType: toolCfg.LicenseType, Scenario: toolCfg.Scenario}); err2 == nil {
+						s.dropTransientConversation(routeRes.ConversationID)
+						routeRes, routeErr = res2, nil
 						acc = next
 						account = chathub.Account{AccessToken: next.AccessToken, OID: next.OID, TID: next.TID}
-						routeErr = nil
+						break
 					} else {
-						s.accountPool.MarkFailure(next.ID, routeErr2, s.getRateLimitCooldown())
-						writeUpstreamErrorWithAccount(w, routeErr2, next.ID)
-						return
+						s.accountPool.MarkFailure(next.ID, err2, s.getRateLimitCooldown())
+						if !IsRateLimited(err2) && !IsAuthFailure(err2) {
+							routeErr = err2
+							break
+						}
+						routeErr = err2
+						curID = next.ID
 					}
 				}
 			}
 			if routeErr != nil {
-				if IsRateLimited(routeErr) {
-					writeUpstreamErrorWithAccount(w, routeErr, acc.ID)
-				} else {
-					writeOpenAIError(w, http.StatusBadGateway, "upstream_error", "tool router: "+routeErr.Error())
-				}
+				writeUpstreamError(w, routeErr)
 				return
 			}
 		}
+		s.dropTransientConversation(routeRes.ConversationID)
 		calls, parsed := parseModelToolDecision(routeRes.Text, toolMaps, body.ToolChoice)
-		calls = filterCompletedCalls(calls, ledger)
-		calls, _ = validateCalls("router", calls)
 		if !parsed {
-			repairRes, repairErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: `Repair this tool routing output into JSON only with shape {"calls":[{"name":"function_name","arguments":{}}]}. Use {"calls":[]} if no tool is needed. OUTPUT:\n` + compactToolResult(routeRes.Text, 6000), Tone: tone, Attachments: body.Attachments, LicenseType: toolCfg.LicenseType, Scenario: toolCfg.Scenario})
-			if repairErr == nil && repairRes.ConversationID != "" {
-				s.dropTransientConversation(repairRes.ConversationID)
-			}
+			repairRes, repairErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: `Repair this tool routing output into JSON only with shape {"calls":[{"name":"function_name","arguments":{}}]}. Do not invent calls; use {"calls":[]} if unrecoverable. OUTPUT:
+` + compactToolResult(routeRes.Text, 6000), Tone: tone, Attachments: body.Attachments, LicenseType: toolCfg.LicenseType, Scenario: toolCfg.Scenario})
 			if repairErr == nil {
+				s.dropTransientConversation(repairRes.ConversationID)
 				calls, parsed = parseModelToolDecision(repairRes.Text, toolMaps, body.ToolChoice)
-				calls = filterCompletedCalls(calls, ledger)
-				calls, _ = validateCalls("router", calls)
+			}
+			if !parsed {
+				writeOpenAIError(w, http.StatusBadGateway, "upstream_error", "model returned an invalid tool routing decision")
+				return
 			}
 		}
-		if parsed && len(calls) > 0 {
-			scope := fmt.Sprintf("%d:%v:stream", len(body.Messages), completedCallIDs(ledger))
+		calls = filterCompletedCalls(calls, ledger)
+		calls, _ = validateCalls("router", calls)
+		if len(calls) > 0 {
+			scope := fmt.Sprintf("%d:%v", len(body.Messages), completedCallIDs(ledger))
 			for i := range calls {
 				calls[i].ID = scopedCallID(calls[i].Name, string(calls[i].Arguments), i, scope)
 			}
@@ -1928,7 +2092,34 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			if body.ParallelToolCalls != nil && !*body.ParallelToolCalls && len(calls) > 1 {
 				calls = calls[:1]
 			}
-			_ = writeToolResponse(w, "chatcmpl-"+uuid.NewString(), firstNonEmpty(body.Model, "m365-copilot"), true, body.shouldSendStreamUsage(), calls, routeRes)
+			_ = writeToolResponse(w, "chatcmpl-"+uuid.NewString(), firstNonEmpty(body.Model, "m365-copilot"), body.Stream, body.shouldSendStreamUsage(), calls, routeRes)
+			return
+		}
+		if fmt.Sprint(body.ToolChoice) == "required" {
+			defs, _ := json.Marshal(toolMaps)
+			retryText := `Select at least one required next tool call from FUNCTION_DEFINITIONS. Validate every argument against its schema. Return JSON only as {"calls":[{"name":"function_name","arguments":{}}]}.
+APPLICATION_REQUEST_AND_EVIDENCE:
+` + prompt + "\n" + ledger.RouterContext() + "\nFUNCTION_DEFINITIONS:\n" + string(defs)
+			retryRes, retryErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: retryText, Tone: tone, Attachments: body.Attachments, LicenseType: toolCfg.LicenseType, Scenario: toolCfg.Scenario})
+			if retryErr == nil {
+				s.dropTransientConversation(retryRes.ConversationID)
+				calls, parsed = parseModelToolDecision(retryRes.Text, toolMaps, body.ToolChoice)
+				calls = filterCompletedCalls(calls, ledger)
+				calls, _ = validateCalls("router", calls)
+				if parsed && len(calls) > 0 {
+					scope := fmt.Sprintf("%d:%v:required-retry", len(body.Messages), completedCallIDs(ledger))
+					for i := range calls {
+						calls[i].ID = scopedCallID(calls[i].Name, string(calls[i].Arguments), i, scope)
+					}
+					calls = limitToolCalls(calls, adaptiveToolCallLimit(calls, configuredToolCallLimit(s.settings)))
+					if body.ParallelToolCalls != nil && !*body.ParallelToolCalls && len(calls) > 1 {
+						calls = calls[:1]
+					}
+					_ = writeToolResponse(w, "chatcmpl-"+uuid.NewString(), firstNonEmpty(body.Model, "m365-copilot"), body.Stream, body.shouldSendStreamUsage(), calls, retryRes)
+					return
+				}
+			}
+			writeOpenAIError(w, http.StatusBadGateway, "upstream_error", "model did not select a required tool after constrained retry")
 			return
 		}
 	}
@@ -1969,6 +2160,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			}
 		}()
 		var text strings.Builder
+		var pending strings.Builder
 		var streamedTools []detectedToolCall
 		first := true
 		identityFilter := newPublicIdentityStreamFilter(model)
@@ -2015,25 +2207,28 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			if ev.Kind != "text" || ev.Text == "" {
 				return nil
 			}
-			text.WriteString(ev.Text)
-			return emitText(ev.Text)
+			return streamEmitText(ev, &text, &pending, emitText)
 		})
 		if err != nil && text.Len() == 0 && len(streamedTools) == 0 && !convReused && body.AccountID == "" && (IsRateLimited(err) || IsAuthFailure(err)) && (IsRateLimited(err) || body.ConversationID == "" || body.ConversationID == resolvedConversationID) {
 			originalErr := err
-			// A throttled stream may retry on the next healthy account: only the
-			// ": connected" preamble reached the client, so the retried stream is
-			// indistinguishable from a fresh request.
-			next, nerr := s.nextHealthyAccount(acc.ID)
-			if nerr != nil {
-				// no healthy alternative
-			} else {
+			tried := map[string]bool{acc.ID: true}
+			curID := acc.ID
+			curErr := err
+			for range s.tokens.List() {
+				next, nerr := s.nextHealthyAccount(curID, accountIDs)
+				if nerr != nil {
+					break
+				}
+				if tried[next.ID] {
+					break
+				}
+				tried[next.ID] = true
 				failoverReq := answerReq
 				if body.ConversationID == resolvedConversationID {
 					failoverReq.ConversationID = ""
 					failoverReq.SessionID = ""
 				}
-				ctx2, cancel2 := context.WithTimeout(r.Context(), time.Duration(s.settings.get().ChatTimeoutSeconds)*time.Second)
-				defer cancel2()
+				ctx2 := ctx
 				res2, err2 := s.chatWithAccountEvents(ctx2, next.ID, chathub.Account{AccessToken: next.AccessToken, OID: next.OID, TID: next.TID}, failoverReq, func(ev chathub.StreamEvent) error {
 					if ev.Kind == "tool" && ev.ToolName != "" && len(ev.Arguments) > 0 {
 						toolKnown := false
@@ -2053,8 +2248,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 					if ev.Kind != "text" || ev.Text == "" {
 						return nil
 					}
-					text.WriteString(ev.Text)
-					return emitText(ev.Text)
+					return streamEmitText(ev, &text, &pending, emitText)
 				})
 				if err2 == nil {
 					if errors.Is(originalErr, chathub.ErrImageLimit) && s.accountPool != nil {
@@ -2063,6 +2257,8 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 					res = res2
 					acc = next
 					err = nil
+					curErr = nil
+					break
 				} else {
 					if errors.Is(originalErr, chathub.ErrImageLimit) && s.accountPool != nil {
 						s.accountPool.MarkImageLimited(acc.ID)
@@ -2070,8 +2266,19 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 					if errors.Is(err2, chathub.ErrImageLimit) && s.accountPool != nil {
 						s.accountPool.MarkImageLimited(next.ID)
 					}
+					s.accountPool.MarkFailure(next.ID, err2, s.getRateLimitCooldown())
 					err = err2
+					curErr = err2
+					curID = next.ID
+					if !IsRateLimited(err2) && !IsAuthFailure(err2) {
+						break
+					}
 				}
+			}
+			if curErr == nil {
+				err = nil
+			} else {
+				err = curErr
 			}
 		}
 		if err != nil {
@@ -2080,7 +2287,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 				s.accountPool.MarkImageLimited(acc.ID)
 			}
 			if convReused {
-				s.invalidateConvCache(acc.ID, convCacheModel)
+				s.invalidateConvCache(convCacheNamespace, acc.ID, convCacheModel)
 			}
 			msg := upstreamError(err)
 			if IsRateLimited(err) {
@@ -2090,7 +2297,13 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 				msg = "M365 content policy flagged this request as offensive"
 			}
 			msg = sanitizePublicInternalText(msg)
-			_ = sseRaw(r.Context(), w, flusher, "data: "+mustJSON(map[string]any{"error": map[string]any{"message": msg, "code": "rate_limit"}})+"\n\n")
+			code := "upstream_error"
+			if IsRateLimited(err) {
+				code = "rate_limit_error"
+			} else if ClassifyError(err) == CategoryClientCanceled {
+				code = "client_canceled"
+			}
+			_ = sseRaw(r.Context(), w, flusher, "data: "+mustJSON(map[string]any{"error": map[string]any{"message": msg, "code": code}})+"\n\n")
 			_ = sseRaw(r.Context(), w, flusher, "data: [DONE]\n\n")
 			return
 		}
@@ -2113,33 +2326,13 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			text.WriteString(res.Text)
 		}
 		rawCalls := streamedTools
-		if len(rawCalls) == 0 {
-			rawCalls = fencedToolCalls(text.String(), toolMaps, body.ToolChoice)
-		}
 		calls, rejected := validateCalls("stream", rawCalls)
 		toolResult := chathub.Result{Text: text.String()}
 		if len(calls) == 0 && rejected > 0 {
-			// A native ChatHub event can contain a fabricated or empty tool name.
-			// Do not leak it to the local runner: ask the model to remap the intent
-			// to exactly one of the tools the client actually declared.
-			repairPrompt := modelToolRouterPrompt(prompt+"\n"+ledger.RouterContext(), toolMaps, "required") +
-				"\nREPAIR RULE: The previous upstream event selected an undeclared tool. Select one declared tool that performs the intended operation. Never return unknown_tool."
-			repairRes, repairErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: repairPrompt, Tone: tone, Attachments: body.Attachments, LicenseType: toolCfg.LicenseType, Scenario: toolCfg.Scenario})
-			if repairErr == nil {
-				repaired, parsed := parseModelToolDecision(repairRes.Text, toolMaps, body.ToolChoice)
-				if parsed {
-					calls, _ = validateCalls("stream-repair", repaired)
-					if len(calls) > 0 {
-						toolResult = repairRes
-					}
-				}
-			}
-			if len(calls) == 0 {
-				log.Printf("[tool-validation] id=%s stage=stream-repair failed", requestID)
-				_ = sseRaw(r.Context(), w, flusher, "data: "+mustJSON(map[string]any{"error": map[string]any{"message": "upstream selected an undeclared tool and repair failed", "code": "invalid_tool_call"}})+"\n\n")
-				_ = sseRaw(r.Context(), w, flusher, "data: [DONE]\n\n")
-				return
-			}
+			log.Printf("[tool-validation] id=%s stage=stream rejected structured tool event", requestID)
+			_ = sseRaw(r.Context(), w, flusher, "data: "+mustJSON(map[string]any{"error": map[string]any{"message": "upstream returned an invalid structured tool event", "code": "invalid_tool_call"}})+"\n\n")
+			_ = sseRaw(r.Context(), w, flusher, "data: [DONE]\n\n")
+			return
 		}
 		if len(calls) > 0 {
 			log.Printf("[req-trace] id=%s stage=tool_calls_detected count=%d names=%v", requestID, len(calls), func() []string {
@@ -2158,7 +2351,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 				s.userSessions.Put(tenantFromRequest(r), body.User, res.ConversationID, res.SessionID, acc.ID)
 			}
 			s.bindConversation(acc, &body, r, res, answerPrompt, startedAt)
-			s.storeConvCache(acc.ID, convCacheModel, res, tone, body.Messages, convReused)
+			s.storeConvCache(convCacheNamespace, acc.ID, convCacheModel, res, tone, body.Messages, convReused)
 			return
 		}
 		finishChunk := map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": "stop"}}}
@@ -2177,89 +2370,8 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			s.userSessions.Put(tenantFromRequest(r), body.User, res.ConversationID, res.SessionID, acc.ID)
 		}
 		s.bindConversation(acc, &body, r, res, answerPrompt, startedAt)
-		s.storeConvCache(acc.ID, convCacheModel, res, tone, body.Messages, convReused)
+		s.storeConvCache(convCacheNamespace, acc.ID, convCacheModel, res, tone, body.Messages, convReused)
 		return
-	}
-	// Ask the upstream model to select and validate the next tool. The gateway
-	// remains tool-agnostic; it only validates and serializes the decision.
-	if planningMode == "router" && len(toolMaps) > 0 && fmt.Sprint(body.ToolChoice) != "none" {
-		routePrompt := modelToolRouterPrompt(answerPrompt+"\n"+ledger.RouterContext(), toolMaps, body.ToolChoice)
-		routeRes, routeErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: routePrompt, Tone: tone, Attachments: body.Attachments, LicenseType: toolCfg.LicenseType, Scenario: toolCfg.Scenario})
-		if routeErr != nil {
-			if IsRateLimited(routeErr) || IsAuthFailure(routeErr) {
-				next, nerr := s.nextHealthyAccount(acc.ID)
-				if nerr == nil {
-					ctx2, cancel2 := context.WithTimeout(r.Context(), time.Duration(s.settings.get().ChatTimeoutSeconds)*time.Second)
-					defer cancel2()
-					if res2, err2 := s.chatWithAccount(ctx2, next.ID, chathub.Account{AccessToken: next.AccessToken, OID: next.OID, TID: next.TID}, chathub.Request{Text: routePrompt, Tone: tone, Attachments: body.Attachments, LicenseType: toolCfg.LicenseType, Scenario: toolCfg.Scenario}); err2 == nil {
-						routeRes, routeErr = res2, nil
-						acc = next
-						account = chathub.Account{AccessToken: next.AccessToken, OID: next.OID, TID: next.TID}
-					} else {
-					}
-				}
-			}
-			if routeErr != nil {
-				msg := upstreamError(routeErr)
-				if IsRateLimited(routeErr) {
-					msg = "upstream is rate limiting; try again shortly"
-				}
-				writeOpenAIError(w, http.StatusBadGateway, "tool_router_error", msg)
-				return
-			}
-		}
-		calls, parsed := parseModelToolDecision(routeRes.Text, toolMaps, body.ToolChoice)
-		if !parsed {
-			repairRes, repairErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: `Repair this tool routing output into JSON only with shape {"calls":[{"name":"function_name","arguments":{}}]}. Do not invent calls; use {"calls":[]} if unrecoverable. OUTPUT:
-` + compactToolResult(routeRes.Text, 6000), Tone: tone, Attachments: body.Attachments, LicenseType: toolCfg.LicenseType, Scenario: toolCfg.Scenario})
-			if repairErr == nil {
-				calls, parsed = parseModelToolDecision(repairRes.Text, toolMaps, body.ToolChoice)
-			}
-			if !parsed {
-				writeOpenAIError(w, http.StatusBadGateway, "upstream_error", "model returned an invalid tool routing decision")
-				return
-			}
-		}
-		calls = filterCompletedCalls(calls, ledger)
-		calls, _ = validateCalls("router", calls)
-		if len(calls) > 0 {
-			scope := fmt.Sprintf("%d:%v", len(body.Messages), completedCallIDs(ledger))
-			for i := range calls {
-				calls[i].ID = scopedCallID(calls[i].Name, string(calls[i].Arguments), i, scope)
-			}
-			calls = limitToolCalls(calls, adaptiveToolCallLimit(calls, configuredToolCallLimit(s.settings)))
-			if body.ParallelToolCalls != nil && !*body.ParallelToolCalls && len(calls) > 1 {
-				calls = calls[:1]
-			}
-			_ = writeToolResponse(w, "chatcmpl-"+uuid.NewString(), firstNonEmpty(body.Model, "m365-copilot"), body.Stream, body.shouldSendStreamUsage(), calls, routeRes)
-			return
-		}
-		if fmt.Sprint(body.ToolChoice) == "required" {
-			defs, _ := json.Marshal(toolMaps)
-			retryText := `Select at least one required next tool call from FUNCTION_DEFINITIONS. Validate every argument against its schema. Return JSON only as {"calls":[{"name":"function_name","arguments":{}}]}.
-APPLICATION_REQUEST_AND_EVIDENCE:
-` + prompt + "\n" + ledger.RouterContext() + "\nFUNCTION_DEFINITIONS:\n" + string(defs)
-			retryRes, retryErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: retryText, Tone: tone, Attachments: body.Attachments, LicenseType: toolCfg.LicenseType, Scenario: toolCfg.Scenario})
-			if retryErr == nil {
-				calls, parsed = parseModelToolDecision(retryRes.Text, toolMaps, body.ToolChoice)
-				calls = filterCompletedCalls(calls, ledger)
-				calls, _ = validateCalls("router", calls)
-				if parsed && len(calls) > 0 {
-					scope := fmt.Sprintf("%d:%v:required-retry", len(body.Messages), completedCallIDs(ledger))
-					for i := range calls {
-						calls[i].ID = scopedCallID(calls[i].Name, string(calls[i].Arguments), i, scope)
-					}
-					calls = limitToolCalls(calls, adaptiveToolCallLimit(calls, configuredToolCallLimit(s.settings)))
-					if body.ParallelToolCalls != nil && !*body.ParallelToolCalls && len(calls) > 1 {
-						calls = calls[:1]
-					}
-					_ = writeToolResponse(w, "chatcmpl-"+uuid.NewString(), firstNonEmpty(body.Model, "m365-copilot"), body.Stream, body.shouldSendStreamUsage(), calls, retryRes)
-					return
-				}
-			}
-			writeOpenAIError(w, http.StatusBadGateway, "upstream_error", "model did not select a required tool after constrained retry")
-			return
-		}
 	}
 	answerReq := buildAnswerRequest(answerPrompt, tone, body, ledger, planningMode, mcpServerURL, s.settings.get(), s.featureFlags(), localeInfo, body.Metadata != nil && body.Metadata.CopilotTempSession)
 	answerPrompt = answerReq.Text
@@ -2346,15 +2458,24 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 		res, err = s.chatWithAccountReasoning(ctx, acc.ID, account, answerReq, onDeltaWrapped, onReasoningWrapped)
 		if err != nil && streamedReasoningLen == 0 && !convReused && body.AccountID == "" && (IsRateLimited(err) || IsAuthFailure(err)) && (IsRateLimited(err) || body.ConversationID == "" || body.ConversationID == resolvedConversationID) {
 			originalErr := err
-			next, nerr := s.nextHealthyAccount(acc.ID)
-			if nerr == nil {
+			tried := map[string]bool{acc.ID: true}
+			curID := acc.ID
+			curErr := err
+			for range s.tokens.List() {
+				next, nerr := s.nextHealthyAccount(curID, accountIDs)
+				if nerr != nil {
+					break
+				}
+				if tried[next.ID] {
+					break
+				}
+				tried[next.ID] = true
 				failoverReq := answerReq
 				if body.ConversationID == resolvedConversationID {
 					failoverReq.ConversationID = ""
 					failoverReq.SessionID = ""
 				}
-				ctx2, cancel2 := context.WithTimeout(r.Context(), time.Duration(s.settings.get().ChatTimeoutSeconds)*time.Second)
-				defer cancel2()
+				ctx2 := ctx
 				if res2, err2 := s.chatWithAccountReasoning(ctx2, next.ID, chathub.Account{AccessToken: next.AccessToken, OID: next.OID, TID: next.TID}, failoverReq, onDelta, onReasoning); err2 == nil {
 					if errors.Is(originalErr, chathub.ErrImageLimit) && s.accountPool != nil {
 						s.accountPool.MarkImageLimited(acc.ID)
@@ -2362,6 +2483,8 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 					res = res2
 					acc = next
 					err = nil
+					curErr = nil
+					break
 				} else {
 					if errors.Is(originalErr, chathub.ErrImageLimit) && s.accountPool != nil {
 						s.accountPool.MarkImageLimited(acc.ID)
@@ -2369,8 +2492,19 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 					if errors.Is(err2, chathub.ErrImageLimit) && s.accountPool != nil {
 						s.accountPool.MarkImageLimited(next.ID)
 					}
+					s.accountPool.MarkFailure(next.ID, err2, s.getRateLimitCooldown())
+					curErr = err2
 					err = err2
+					curID = next.ID
+					if !IsRateLimited(err2) && !IsAuthFailure(err2) {
+						break
+					}
 				}
+			}
+			if curErr == nil {
+				err = nil
+			} else {
+				err = curErr
 			}
 		}
 		if err == nil {
@@ -2407,7 +2541,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 				s.accountPool.MarkImageLimited(acc.ID)
 			}
 			if convReused {
-				s.invalidateConvCache(acc.ID, convCacheModel)
+				s.invalidateConvCache(convCacheNamespace, acc.ID, convCacheModel)
 			}
 			msg := upstreamError(err)
 			if IsRateLimited(err) {
@@ -2417,7 +2551,13 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 				msg = "M365 content policy flagged this request as offensive"
 			}
 			msg = sanitizePublicInternalText(msg)
-			_ = sseRaw(r.Context(), w, flusher, "data: "+mustJSON(map[string]any{"error": map[string]any{"message": msg, "code": "rate_limit"}})+"\n\n")
+			code := "upstream_error"
+			if IsRateLimited(err) {
+				code = "rate_limit_error"
+			} else if ClassifyError(err) == CategoryClientCanceled {
+				code = "client_canceled"
+			}
+			_ = sseRaw(r.Context(), w, flusher, "data: "+mustJSON(map[string]any{"error": map[string]any{"message": msg, "code": code}})+"\n\n")
 		}
 		pt := EstimateTokens(prompt)
 		ct := EstimateTokens(res.Text)
@@ -2454,17 +2594,25 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 		}
 		if err != nil && !convReused && body.AccountID == "" && (IsRateLimited(err) || IsAuthFailure(err)) && (IsRateLimited(err) || body.ConversationID == "" || body.ConversationID == resolvedConversationID) {
 			originalErr := err
-			// Failover only when nothing pins the request to a conversation or
-			// account; a fresh chat can safely retry on the next healthy account.
-			next, nerr := s.nextHealthyAccount(acc.ID)
-			if nerr == nil {
+			tried := map[string]bool{acc.ID: true}
+			curID := acc.ID
+			curErr := err
+			var lastRes chathub.Result
+			for range s.tokens.List() {
+				next, nerr := s.nextHealthyAccount(curID, accountIDs)
+				if nerr != nil {
+					break
+				}
+				if tried[next.ID] {
+					break
+				}
+				tried[next.ID] = true
 				failoverReq := answerReq
 				if body.ConversationID == resolvedConversationID {
 					failoverReq.ConversationID = ""
 					failoverReq.SessionID = ""
 				}
-				ctx2, cancel2 := context.WithTimeout(r.Context(), time.Duration(s.settings.get().ChatTimeoutSeconds)*time.Second)
-				defer cancel2()
+				ctx2 := ctx
 				res2, err2 := s.chatWithAccount(ctx2, next.ID, chathub.Account{AccessToken: next.AccessToken, OID: next.OID, TID: next.TID}, failoverReq)
 				if err2 == nil {
 					if errors.Is(originalErr, chathub.ErrImageLimit) && s.accountPool != nil {
@@ -2473,6 +2621,9 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 					res = res2
 					acc = next
 					err = nil
+					curErr = nil
+					lastRes = res2
+					break
 				} else {
 					if errors.Is(originalErr, chathub.ErrImageLimit) && s.accountPool != nil {
 						s.accountPool.MarkImageLimited(acc.ID)
@@ -2480,8 +2631,20 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 					if errors.Is(err2, chathub.ErrImageLimit) && s.accountPool != nil {
 						s.accountPool.MarkImageLimited(next.ID)
 					}
+					s.accountPool.MarkFailure(next.ID, err2, s.getRateLimitCooldown())
 					err = err2
+					curErr = err2
+					curID = next.ID
+					if !IsRateLimited(err2) && !IsAuthFailure(err2) {
+						break
+					}
 				}
+			}
+			if curErr == nil {
+				err = nil
+				res = lastRes
+			} else {
+				err = curErr
 			}
 		}
 	}
@@ -2490,7 +2653,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 			s.accountPool.MarkImageLimited(acc.ID)
 		}
 		if convReused {
-			s.invalidateConvCache(acc.ID, convCacheModel)
+			s.invalidateConvCache(convCacheNamespace, acc.ID, convCacheModel)
 			log.Printf("[conv-cache] invalidated account=%s model=%s after error: %v", acc.ID, convCacheModel, err)
 		}
 		writeUpstreamErrorWithAccount(w, err, acc.ID)
@@ -2505,7 +2668,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 			s.userSessions.Put(tenantFromRequest(r), body.User, res.ConversationID, res.SessionID, acc.ID)
 		}
 		s.bindConversation(acc, &body, r, res, prompt, startedAt)
-		s.storeConvCache(acc.ID, convCacheModel, res, tone, body.Messages, convReused)
+		s.storeConvCache(convCacheNamespace, acc.ID, convCacheModel, res, tone, body.Messages, convReused)
 		return
 	}
 
@@ -2518,7 +2681,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 	}
 	if res.ConversationID != "" {
 		s.bindConversation(acc, &body, r, res, prompt, startedAt)
-		s.storeConvCache(acc.ID, convCacheModel, res, tone, body.Messages, convReused)
+		s.storeConvCache(convCacheNamespace, acc.ID, convCacheModel, res, tone, body.Messages, convReused)
 	}
 	if res.ConversationID != "" {
 		resolved := s.sessionResolver.Resolve(r, &body)
@@ -2548,18 +2711,6 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 		}
 	}
 	invalidDetectedTool := false
-	if rawCalls := fencedToolCalls(res.Text, toolMaps, body.ToolChoice); len(rawCalls) > 0 {
-		calls, rejected := validateCalls("fenced", rawCalls)
-		invalidDetectedTool = rejected > 0
-		if len(calls) > 0 {
-			calls = limitToolCalls(calls, adaptiveToolCallLimit(calls, configuredToolCallLimit(s.settings)))
-			if body.ParallelToolCalls != nil && !*body.ParallelToolCalls && len(calls) > 1 {
-				calls = calls[:1]
-			}
-			_ = writeToolResponse(w, id, model, body.Stream, body.shouldSendStreamUsage(), calls, res)
-			return
-		}
-	}
 	if rawCalls := nativeToolCalls(res.Events, body.Tools); len(rawCalls) > 0 {
 		calls, rejected := validateCalls("native", rawCalls)
 		invalidDetectedTool = invalidDetectedTool || rejected > 0
@@ -2572,30 +2723,9 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 			return
 		}
 	}
-	// Recover natural-language tool intent in native mode, and repair any
-	// structured event that failed the declared-name/schema boundary.
-	if (planningMode == "native" || invalidDetectedTool) && len(toolMaps) > 0 && fmt.Sprint(body.ToolChoice) != "none" {
-		routePrompt := modelToolRouterPrompt(prompt+"\n"+ledger.RouterContext(), toolMaps, body.ToolChoice)
-		routeRes, routeErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: routePrompt, Tone: tone, Attachments: body.Attachments, LicenseType: toolCfg.LicenseType, Scenario: toolCfg.Scenario})
-		if routeErr == nil {
-			calls, parsed := parseModelToolDecision(routeRes.Text, toolMaps, body.ToolChoice)
-			if !parsed {
-				repairRes, repairErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: `Repair this tool routing output into JSON only with shape {"calls":[{"name":"function_name","arguments":{}}]}. Use {"calls":[]} if no tool is needed. OUTPUT:\n` + compactToolResult(routeRes.Text, 6000), Tone: tone, Attachments: body.Attachments, LicenseType: toolCfg.LicenseType, Scenario: toolCfg.Scenario})
-				if repairErr == nil {
-					calls, parsed = parseModelToolDecision(repairRes.Text, toolMaps, body.ToolChoice)
-				}
-			}
-			calls, _ = validateCalls("native-recovery", calls)
-			if parsed && len(calls) > 0 {
-				scope := fmt.Sprintf("%d:%v:native-recovery", len(body.Messages), completedCallIDs(ledger))
-				for i := range calls {
-					calls[i].ID = scopedCallID(calls[i].Name, string(calls[i].Arguments), i, scope)
-				}
-				calls = limitToolCalls(calls, adaptiveToolCallLimit(calls, configuredToolCallLimit(s.settings)))
-				_ = writeToolResponse(w, id, model, body.Stream, body.shouldSendStreamUsage(), calls, routeRes)
-				return
-			}
-		}
+	if invalidDetectedTool {
+		writeOpenAIError(w, http.StatusBadGateway, "invalid_tool_call", "upstream returned an invalid structured tool event")
+		return
 	}
 	if isContentPolicyBlock(res.Text) {
 		log.Printf("[content-policy] M365 blocked the request, returning 503")

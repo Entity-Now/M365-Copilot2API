@@ -22,23 +22,15 @@ type modelMapping struct {
 	DefaultReasoningLevel string `json:"defaultReasoningLevel"`
 }
 
-var defaultModelMappings = []modelMapping{
-	{PublicModel: "gpt-5.6-sol", UpstreamTone: "Gpt_5_6_Reasoning", DisplayName: "GPT-5.6-Sol", DefaultReasoningLevel: "low"},
-	{PublicModel: "gpt-5.6-terra", UpstreamTone: "Gpt_5_6_Reasoning", DisplayName: "GPT-5.6-Terra", DefaultReasoningLevel: "medium"},
-	{PublicModel: "gpt-5.6-luna", UpstreamTone: "Gpt_5_6_Reasoning", DisplayName: "GPT-5.6-Luna", DefaultReasoningLevel: "medium"},
-}
+var defaultModelMappings = []modelMapping{}
 
 var publicModelID = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
 
 var configurableCodexModels = []string{
 	"gpt-5.2",
 	"gpt-5.4",
-	"gpt-5.4-mini",
 	"gpt-5.5",
-	"gpt-5.6-sol",
-	"gpt-5.6-terra",
-	"gpt-5.6-luna",
-	"codex-auto-review",
+	"gpt-5.6-reasoning",
 }
 
 type runtimeSettings struct {
@@ -72,6 +64,7 @@ type runtimeSettings struct {
 	EnableComputerUse          bool           `json:"enableComputerUse"`
 	EnableRealtimeVoice        bool           `json:"enableRealtimeVoice"`
 	EnableSystemPromptOverride bool           `json:"enableSystemPromptOverride"`
+	EnableImageAPI             bool           `json:"enableImageApi"`
 	EnableDesignerImageGen4o   bool           `json:"enableDesignerImageGen4o"`
 	EnableCodeCanvas           bool           `json:"enableCodeCanvas"`
 	EnableSydneyReconnect      bool           `json:"enableSydneyReconnect"`
@@ -92,9 +85,9 @@ func envInt(name string, fallback int) int {
 }
 func defaultRuntimeSettings() runtimeSettings {
 	return runtimeSettings{
-		MaxToolCallsPerTurn: envInt("M365_MAX_TOOL_CALLS_PER_TURN", 32), MaxToolRounds: envInt("M365_MAX_TOOL_ROUNDS", 512),
-		ContextWindow: envInt("M365_CONTEXT_WINDOW", 128000), MaxOutputTokens: envInt("M365_MAX_OUTPUT_TOKENS", 16384),
-		ChatTimeoutSeconds: envInt("M365_CHAT_TIMEOUT_SECONDS", 120), ImageTimeoutSeconds: envInt("M365_IMAGE_TIMEOUT_SECONDS", 150), LogLevel: firstNonEmptySetting(os.Getenv("M365_LOG_LEVEL"), "info"),
+		MaxToolCallsPerTurn: envInt("M365_MAX_TOOL_CALLS_PER_TURN", 64), MaxToolRounds: envInt("M365_MAX_TOOL_ROUNDS", 512),
+		ContextWindow: envInt("M365_CONTEXT_WINDOW", 512000), MaxOutputTokens: envInt("M365_MAX_OUTPUT_TOKENS", 65536),
+		ChatTimeoutSeconds: envInt("M365_CHAT_TIMEOUT_SECONDS", 600), ImageTimeoutSeconds: envInt("M365_IMAGE_TIMEOUT_SECONDS", 300), LogLevel: firstNonEmptySetting(os.Getenv("M365_LOG_LEVEL"), "info"),
 		DebugLogPath: os.Getenv("M365_DEBUG_LOG"), ListenAddress: os.Getenv("M365_LISTEN"), ConfigPath: os.Getenv("M365_CONFIG"),
 		TokenCachePath: os.Getenv("M365_TOKEN_CACHE"), SessionCachePath: os.Getenv("M365_SESSION_CACHE"), OutboundProxy: os.Getenv(outbound.EnvProxy), ClientID: os.Getenv("M365_CLIENT_ID"),
 		Authority: os.Getenv("M365_AUTHORITY"), RedirectURI: os.Getenv("M365_REDIRECT_URI"), Scope: os.Getenv("M365_SCOPE"),
@@ -102,14 +95,15 @@ func defaultRuntimeSettings() runtimeSettings {
 		ToolPlanningMode:           toolPlanningMode(os.Getenv("M365_TOOL_PLANNING_MODE")),
 		RateLimitCooldownSeconds:   envInt("M365_RATE_LIMIT_COOLDOWN_SECONDS", 30),
 		Scenario:                   firstNonEmptySetting(os.Getenv("M365_SCENARIO"), "OfficeWebIncludedCopilot"),
-		MaxConversationMessages:    envInt("M365_MAX_CONVERSATION_MESSAGES", 600),
+		MaxConversationMessages:    envInt("M365_MAX_CONVERSATION_MESSAGES", 10000),
 		LicenseType:                firstNonEmptySetting(os.Getenv("M365_LICENSE_TYPE"), "Starter"),
-		AccountConcurrencyLimit:    envInt("M365_ACCOUNT_CONCURRENCY_LIMIT", 8),
+		AccountConcurrencyLimit:    envInt("M365_ACCOUNT_CONCURRENCY_LIMIT", 16),
 		EnableMemoryV2:             os.Getenv("M365_ENABLE_MEMORY_V2") == "true",
 		EnableDeepWork:             os.Getenv("M365_ENABLE_DEEP_WORK") == "true",
 		EnableComputerUse:          os.Getenv("M365_ENABLE_COMPUTER_USE") == "true",
 		EnableRealtimeVoice:        os.Getenv("M365_ENABLE_REALTIME_VOICE") == "true",
 		EnableSystemPromptOverride: os.Getenv("M365_ENABLE_SYSTEM_PROMPT_OVERRIDE") == "true",
+		EnableImageAPI:             os.Getenv("M365_ENABLE_IMAGE_API") == "true",
 		EnableDesignerImageGen4o:   os.Getenv("M365_ENABLE_DESIGNER_IMAGE_GEN_4O") == "true",
 		EnableCodeCanvas:           os.Getenv("M365_ENABLE_CODE_CANVAS") == "true",
 		EnableSydneyReconnect:      os.Getenv("M365_ENABLE_SYDNEY_RECONNECT") == "true",

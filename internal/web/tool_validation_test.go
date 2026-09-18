@@ -48,10 +48,3 @@ func TestValidateDetectedToolCallsAcceptsDeclaredCall(t *testing.T) {
 		t.Fatalf("call was not normalized: %#v", valid[0])
 	}
 }
-
-func TestParseNaturalToolDecisionRejectsBadSchema(t *testing.T) {
-	calls, parsed := parseModelToolDecision(`CALL_TOOL: get_weather({"city":2})`, testTools(), "auto")
-	if parsed || len(calls) != 0 {
-		t.Fatalf("calls=%#v parsed=%v", calls, parsed)
-	}
-}

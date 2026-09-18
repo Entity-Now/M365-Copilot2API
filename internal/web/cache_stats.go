@@ -165,5 +165,9 @@ func (s *CacheStats) flush() error {
 }
 
 func EstimateTokens(text string) int64 {
-	return int64(utf8.RuneCountInString(text) * 2 / 3)
+	count, _ := tokenEstimator("gpt-5")
+	if count == nil {
+		return int64(utf8.RuneCountInString(text) * 2 / 3)
+	}
+	return int64(count(text))
 }

@@ -30,10 +30,10 @@ func TestBuildAnswerRequestRouterOmitsNativePlugins(t *testing.T) {
 	}
 }
 
-func TestBuildAnswerRequestNativeForwardsTools(t *testing.T) {
+func TestBuildAnswerRequestRejectsUnverifiedNativeForwarding(t *testing.T) {
 	req := buildAnswerRequest("[user]\nhello", "magic", answerRequestTestBody(), agentLedger{}, "native", "", runtimeSettings{}, chathub.FeatureFlags{}, chathubLocale{}, false)
-	if len(req.Tools) != 1 || req.ToolChoice != "auto" {
-		t.Fatalf("native answer lost tools: tools=%d choice=%#v", len(req.Tools), req.ToolChoice)
+	if len(req.Tools) != 0 || req.ToolChoice != nil || req.MCPServerURL != "" {
+		t.Fatalf("unverified native fields leaked upstream: tools=%d choice=%#v mcp=%q", len(req.Tools), req.ToolChoice, req.MCPServerURL)
 	}
 }
 
@@ -47,12 +47,9 @@ func TestBuildAnswerRequestAddsCompletedEvidence(t *testing.T) {
 	}
 }
 
-func TestBuildAnswerRequestMCPForwardsTools(t *testing.T) {
+func TestBuildAnswerRequestRejectsSyntheticMCPPlugin(t *testing.T) {
 	req := buildAnswerRequest("[user]\nhello", "magic", answerRequestTestBody(), agentLedger{}, "router", "http://127.0.0.1:4142/v1/mcp/sse", runtimeSettings{}, chathub.FeatureFlags{}, chathubLocale{}, false)
-	if len(req.Tools) != 1 || req.ToolChoice != "auto" {
-		t.Fatalf("MCP answer lost tools: tools=%d choice=%#v", len(req.Tools), req.ToolChoice)
-	}
-	if req.MCPServerURL != "http://127.0.0.1:4142/v1/mcp/sse" {
-		t.Fatalf("MCP URL not set: %q", req.MCPServerURL)
+	if len(req.Tools) != 0 || req.ToolChoice != nil || req.MCPServerURL != "" {
+		t.Fatalf("synthetic MCP fields leaked upstream: tools=%d choice=%#v mcp=%q", len(req.Tools), req.ToolChoice, req.MCPServerURL)
 	}
 }

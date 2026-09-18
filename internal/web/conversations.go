@@ -141,19 +141,28 @@ func (s *Server) handleM365Conversations(w http.ResponseWriter, r *http.Request)
 		writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
 		return
 	}
-	if m365CloudClient == nil && len(s.sessionResolver.ListSessions()) == 0 {
-		writeOpenAIError(w, http.StatusServiceUnavailable, "m365_not_configured", "M365 cloud client not configured. Please add an M365 account first via PKCE authorization.")
+	if (s.cloudClients == nil || s.cloudClients.len() == 0) && len(s.sessionResolver.ListSessions()) == 0 {
+		writeOpenAIError(w, http.StatusServiceUnavailable, "m365_not_configured", "m365_cloud_not_configured")
 		return
 	}
 	rows := make(map[string]map[string]any)
 	var cloudErr error
-	if m365CloudClient != nil {
-		var chats []map[string]any
-		chats, cloudErr = m365CloudClient.ListConversations()
-		for _, chat := range chats {
-			conversationID, _ := chat["conversationId"].(string)
-			if conversationID != "" {
-				rows[conversationID] = chat
+	if s.cloudClients != nil {
+		for accountID, client := range s.cloudClients.list() {
+			chats, err := client.ListConversations()
+			if err != nil {
+				cloudErr = err
+				continue
+			}
+			for _, chat := range chats {
+				conversationID, _ := chat["conversationId"].(string)
+				if conversationID != "" {
+					chat["accountId"] = accountID
+					if account, found := s.tokens.Get(accountID); found {
+						chat["accountEmail"] = account.Email
+					}
+					rows[accountID+"\x00"+conversationID] = chat
+				}
 			}
 		}
 	}
@@ -163,10 +172,11 @@ func (s *Server) handleM365Conversations(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	for _, session := range s.sessionResolver.ListSessions() {
-		row, ok := rows[session.ConversationID]
+		key := session.AccountID + "\x00" + session.ConversationID
+		row, ok := rows[key]
 		if !ok {
 			row = map[string]any{}
-			rows[session.ConversationID] = row
+			rows[key] = row
 		}
 		row["conversationId"] = session.ConversationID
 		row["sessionId"] = session.SessionID
@@ -208,7 +218,7 @@ func (s *Server) handleM365ConversationDetail(w http.ResponseWriter, r *http.Req
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "conversation id is required")
 		return
 	}
-	session, found := s.sessionResolver.GetConversation(conversationID)
+	session, found := s.sessionResolver.GetConversation(tenantFromRequest(r), conversationID)
 	if !found {
 		writeOpenAIError(w, http.StatusNotFound, "conversation_not_found", "conversation history is not available")
 		return
@@ -269,18 +279,29 @@ func (s *Server) handleM365Delete(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
 		return
 	}
-	if m365CloudClient == nil {
-		writeOpenAIError(w, http.StatusServiceUnavailable, "m365_not_configured", "M365 cloud client not configured. Please add an M365 account first via PKCE authorization.")
-		return
-	}
 	var body struct {
 		ConversationID string `json:"conversation_id"`
+		AccountID      string `json:"account_id"`
 	}
 	if json.NewDecoder(r.Body).Decode(&body) != nil || body.ConversationID == "" {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "bad json")
 		return
 	}
-	if err := m365CloudClient.DeleteConversation(body.ConversationID); err != nil {
+	accountID := strings.TrimSpace(body.AccountID)
+	if accountID == "" {
+		session, ok := s.sessionResolver.GetConversationByID(body.ConversationID)
+		if !ok {
+			writeOpenAIError(w, http.StatusConflict, "account_required", "account_id is required when the conversation owner is unknown or ambiguous")
+			return
+		}
+		accountID = session.AccountID
+	}
+	client, ok := s.cloudClients.get(accountID)
+	if !ok {
+		writeOpenAIError(w, http.StatusServiceUnavailable, "m365_not_configured", "m365_cloud_not_configured")
+		return
+	}
+	if err := client.DeleteConversation(body.ConversationID); err != nil {
 		writeOpenAIError(w, http.StatusBadGateway, "m365_error", err.Error())
 		return
 	}
@@ -293,13 +314,10 @@ func (s *Server) handleM365Cleanup(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
 		return
 	}
-	if m365CloudClient == nil {
-		writeOpenAIError(w, http.StatusServiceUnavailable, "m365_not_configured", "M365 cloud client not configured. Please add an M365 account first via PKCE authorization.")
-		return
-	}
 	var body struct {
-		MaxAgeHours int `json:"max_age_hours"`
-		KeepN       int `json:"keep_n"`
+		MaxAgeHours int    `json:"max_age_hours"`
+		KeepN       int    `json:"keep_n"`
+		AccountID   string `json:"account_id"`
 	}
 	json.NewDecoder(r.Body).Decode(&body)
 
@@ -312,7 +330,12 @@ func (s *Server) handleM365Cleanup(w http.ResponseWriter, r *http.Request) {
 		keepN = 5
 	}
 
-	deleted, err := m365CloudClient.CleanupOldConversations(maxAge, keepN)
+	client, ok := s.cloudClients.get(strings.TrimSpace(body.AccountID))
+	if !ok {
+		writeOpenAIError(w, http.StatusBadRequest, "account_required", "valid account_id is required")
+		return
+	}
+	deleted, err := client.CleanupOldConversations(maxAge, keepN)
 	if err != nil {
 		writeOpenAIError(w, http.StatusBadGateway, "m365_error", err.Error())
 		return

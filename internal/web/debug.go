@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -118,6 +119,7 @@ func (d *debugStore) add(r debugRecord) {
 	if len(d.records) > 500 {
 		d.records = d.records[len(d.records)-500:]
 	}
+	d.rotateLocked()
 	if f, e := os.OpenFile(d.path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600); e == nil {
 		b, _ := json.Marshal(r)
 		_, _ = f.Write(append(b, '\n'))
@@ -146,10 +148,24 @@ func (d *debugStore) get(id string) (debugRecord, bool) {
 
 const (
 	maxDebugCaptureBytes = 256 << 10
+	maxDebugLogBytes     = 64 << 20
+	maxDebugLogBackups   = 3
 	// Keep debug snapshots bounded without truncating the request forwarded to
 	// the actual handler. Images and audio data URLs commonly exceed 256 KiB.
 	maxDebugRequestBytes = 10 << 20
 )
+
+func (d *debugStore) rotateLocked() {
+	info, err := os.Stat(d.path)
+	if err != nil || info.Size() < maxDebugLogBytes {
+		return
+	}
+	_ = os.Remove(d.path + ".3")
+	for i := maxDebugLogBackups - 1; i >= 1; i-- {
+		_ = os.Rename(d.path+"."+strconv.Itoa(i), d.path+"."+strconv.Itoa(i+1))
+	}
+	_ = os.Rename(d.path, d.path+".1")
+}
 
 type limitedBuffer struct {
 	bytes.Buffer

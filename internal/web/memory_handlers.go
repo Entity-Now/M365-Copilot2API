@@ -14,7 +14,9 @@ import (
 	"time"
 )
 
-const substrateBase = "https://substrate.office.com"
+var substrateBase = "https://substrate.office.com"
+
+var substrateHTTPClient = outbound.HTTPClient()
 
 var flagsCache = &struct {
 	sync.Mutex
@@ -27,7 +29,16 @@ type flagsCacheEntry struct {
 }
 
 func (s *Server) memoryAccount(r *http.Request) (auth.AccountToken, bool) {
-	acc, err := s.resolveAccount("")
+	accountID := strings.TrimSpace(r.URL.Query().Get("account_id"))
+	var (
+		acc auth.AccountToken
+		err error
+	)
+	if accountID != "" {
+		acc, err = s.tokens.EnsureValid(accountID)
+	} else {
+		acc, err = s.resolveAccount("")
+	}
 	if err != nil {
 		return auth.AccountToken{}, false
 	}
@@ -62,7 +73,7 @@ func proxySubstrate(w http.ResponseWriter, targetURL string, method string, acc 
 		return
 	}
 	req.Header = substrateHeaders(acc)
-	resp, err := outbound.HTTPClient().Do(req)
+	resp, err := substrateHTTPClient.Do(req)
 	if err != nil {
 		log.Printf("[memory-proxy] substrate error url=%s err=%v", targetURL, err)
 		writeOpenAIError(w, http.StatusBadGateway, "upstream_error", "substrate request failed")
@@ -101,7 +112,7 @@ func (s *Server) memoryGetFlags(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.Header = substrateHeaders(acc)
-	resp, err := outbound.HTTPClient().Do(req)
+	resp, err := substrateHTTPClient.Do(req)
 	if err != nil {
 		log.Printf("[memory-flags] substrate error err=%v", err)
 		writeOpenAIError(w, http.StatusBadGateway, "upstream_error", "substrate request failed")

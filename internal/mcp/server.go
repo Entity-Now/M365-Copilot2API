@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
@@ -63,6 +64,29 @@ func (r *toolRegistry) ClearTools() {
 
 // GlobalRegistry is a global registry of MCP sessions, keyed by session ID.
 var GlobalRegistry = &sessionRegistry{sessions: map[string]*session{}}
+
+// globalResourceProvider is guarded by its own RWMutex: handleRPC runs on
+// per-request goroutines while registration paths (and tests) may swap the
+// provider concurrently. Access it only through resourceProvider() and
+// SetGlobalResourceProvider().
+var globalResourceProvider struct {
+	mu       sync.RWMutex
+	provider ResourceProvider
+}
+
+func resourceProvider() ResourceProvider {
+	globalResourceProvider.mu.RLock()
+	defer globalResourceProvider.mu.RUnlock()
+	return globalResourceProvider.provider
+}
+
+// SetGlobalResourceProvider installs the resource provider used by
+// resources/list and resources/read. Safe for concurrent use.
+func SetGlobalResourceProvider(p ResourceProvider) {
+	globalResourceProvider.mu.Lock()
+	defer globalResourceProvider.mu.Unlock()
+	globalResourceProvider.provider = p
+}
 
 // APIKeyValidator is injected by the web package to validate API keys.
 // When nil, no authentication is enforced on MCP endpoints.
@@ -131,6 +155,10 @@ func (r *sessionRegistry) getSession(id string) *session {
 
 // HandleSSE handles MCP SSE connections. Mount at /v1/mcp/sse.
 func HandleSSE(w http.ResponseWriter, r *http.Request) {
+	if APIKeyValidator != nil && !APIKeyValidator(r) {
+		http.Error(w, `{"error":{"message":"valid API key required","type":"auth_error"}}`, http.StatusUnauthorized)
+		return
+	}
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
@@ -173,6 +201,10 @@ func HandleSSE(w http.ResponseWriter, r *http.Request) {
 
 // HandleMessage handles MCP JSON-RPC messages. Mount at /v1/mcp/message.
 func HandleMessage(w http.ResponseWriter, r *http.Request) {
+	if APIKeyValidator != nil && !APIKeyValidator(r) {
+		http.Error(w, `{"error":{"message":"valid API key required","type":"auth_error"}}`, http.StatusUnauthorized)
+		return
+	}
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -254,8 +286,11 @@ func handleRPC(ctx context.Context, sess *session, req *jsonRPCRequest) *jsonRPC
 	case "initialize":
 		return jsonRPCResult(req.ID, map[string]any{
 			"protocolVersion": "2024-11-05",
-			"capabilities":    map[string]any{"tools": map[string]any{}},
-			"serverInfo":      map[string]any{"name": "m365-copilot2api", "version": "0.1.0"},
+			"capabilities": map[string]any{
+				"tools":     map[string]any{},
+				"resources": map[string]any{"subscribe": false, "listChanged": false},
+			},
+			"serverInfo": map[string]any{"name": "m365-copilot2api", "version": "0.1.0"},
 		})
 	case "tools/list":
 		// First check session-specific tools, then fall back to global registry
@@ -298,6 +333,78 @@ func handleRPC(ctx context.Context, sess *session, req *jsonRPCRequest) *jsonRPC
 			})
 		}
 		return jsonRPCResult(req.ID, result)
+	case "resources/list":
+		if rp := resourceProvider(); rp != nil {
+			resources, err := rp.ListResources(ctx)
+			if err != nil {
+				// Forwarding err.Error() can leak internal details (paths,
+				// connection strings). Log it server-side and return a
+				// generic message instead.
+				log.Printf("[mcp] resources/list failed: %v", err)
+				return newRPCError(req.ID, -32603, "internal error: unable to list resources")
+			}
+			if resources == nil {
+				resources = []Resource{}
+			}
+			return jsonRPCResult(req.ID, map[string]any{"resources": resources})
+		}
+		return jsonRPCResult(req.ID, map[string]any{"resources": []Resource{}})
+	case "resources/read":
+		var params struct {
+			URI string `json:"uri"`
+		}
+		if err := json.Unmarshal(req.Params, &params); err != nil {
+			// The raw unmarshal error can echo request bytes / internal
+			// shapes; log it and return a generic message (consistent with
+			// the provider-error handling above and below).
+			log.Printf("[mcp] resources/read: invalid params: %v", err)
+			return newRPCError(req.ID, -32602, "invalid params: uri is required")
+		}
+		if params.URI == "" {
+			return newRPCError(req.ID, -32602, "missing uri")
+		}
+		if !strings.HasPrefix(params.URI, "mcp://") && !strings.HasPrefix(params.URI, "gateway://") && !strings.HasPrefix(params.URI, "m365://") {
+			return newRPCError(req.ID, -32602, "unsupported uri scheme: allowed prefixes are mcp://, gateway://, m365://")
+		}
+		rp := resourceProvider()
+		if rp == nil {
+			return newRPCError(req.ID, -32603, "no resources available")
+		}
+		// SSRF guard: a URI prefix check alone is not enough — an allowed
+		// scheme can still point at internal data. Only URIs the provider
+		// itself advertised via resources/list are readable, so reads are
+		// tied to the enumerated surface and cannot probe arbitrary targets.
+		//
+		// TODO(perf): this is O(n) per read. Fine at current resource
+		// counts; if providers grow large, add a ResourceExists(ctx, uri)
+		// method to ResourceProvider so the check happens inside the
+		// provider without materializing the list.
+		listed, err := rp.ListResources(ctx)
+		if err != nil {
+			log.Printf("[mcp] resources/read allowlist check failed: %v", err)
+			return newRPCError(req.ID, -32603, "internal error: unable to read resource")
+		}
+		allowed := false
+		for _, res := range listed {
+			if res.URI == params.URI {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			// Do not echo the requested URI back to the client — log it
+			// server-side instead.
+			log.Printf("[mcp] resources/read rejected unlisted uri %q", params.URI)
+			return newRPCError(req.ID, -32002, "resource not found")
+		}
+		content, err := rp.ReadResource(ctx, params.URI)
+		if err != nil {
+			log.Printf("[mcp] resources/read %q failed: %v", params.URI, err)
+			return newRPCError(req.ID, -32603, "internal error: unable to read resource")
+		}
+		return jsonRPCResult(req.ID, map[string]any{
+			"contents": []ResourceContent{content},
+		})
 	case "notifications/initialized":
 		return nil
 	default:

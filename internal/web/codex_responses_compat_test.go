@@ -2,12 +2,33 @@ package web
 
 import (
 	"encoding/json"
+	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"m365-copilot2api/internal/chathub"
 )
+
+func TestResponsesRoutesAreTemporarilyDisabled(t *testing.T) {
+	const rawKey = "responses-disabled-test-key"
+	keys := newAPIKeyStore(filepath.Join(t.TempDir(), "api-keys.json"))
+	keys.Keys = []apiKeyRecord{{Hash: keyHash(rawKey)}}
+	s := &Server{apiKeys: keys}
+	for _, path := range []string{"/v1/responses", "/responses"} {
+		w := httptest.NewRecorder()
+		r := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"model":"gpt-5.5","input":"hello"}`))
+		r.Header.Set("Authorization", "Bearer "+rawKey)
+		s.Routes().ServeHTTP(w, r)
+		if w.Code != http.StatusGone {
+			t.Fatalf("%s status=%d body=%s, want 410", path, w.Code, w.Body.String())
+		}
+		if !strings.Contains(w.Body.String(), `"code":"responses_disabled"`) {
+			t.Fatalf("%s body=%s, want responses_disabled", path, w.Body.String())
+		}
+	}
+}
 
 func TestParseContentAcceptsResponsesTextBlocks(t *testing.T) {
 	content := []any{
@@ -96,6 +117,54 @@ func TestStreamingResponsesResultIncludesUsage(t *testing.T) {
 	if !strings.Contains(body, "event: response.completed") || !strings.Contains(body, `"total_tokens":`) || !strings.Contains(body, usageSourceTiktoken) {
 		t.Fatalf("stream completion missing usage: %s", body)
 	}
+}
+
+func TestStreamingResponsesFunctionCallAddedIncludesIdentity(t *testing.T) {
+	rr := httptest.NewRecorder()
+	writeResponsesResult(rr, "gpt-5.6-sol", true, map[string]any{
+		"choices": []any{map[string]any{
+			"message": map[string]any{
+				"tool_calls": []any{map[string]any{
+					"id":   "call_list_dir_1",
+					"type": "function",
+					"function": map[string]any{
+						"name":      "list_dir",
+						"arguments": `{"path":"."}`,
+					},
+				}},
+			},
+		}},
+	})
+
+	for _, frame := range strings.Split(rr.Body.String(), "\n\n") {
+		if !strings.HasPrefix(frame, "event: response.output_item.added\n") {
+			continue
+		}
+		data := strings.TrimPrefix(strings.SplitN(frame, "\n", 2)[1], "data: ")
+		var event struct {
+			Item struct {
+				Type      string `json:"type"`
+				CallID    string `json:"call_id"`
+				Name      string `json:"name"`
+				Arguments string `json:"arguments"`
+				Status    string `json:"status"`
+			} `json:"item"`
+		}
+		if err := json.Unmarshal([]byte(data), &event); err != nil {
+			t.Fatal(err)
+		}
+		if event.Item.Type != "function_call" {
+			continue
+		}
+		if event.Item.CallID != "call_list_dir_1" || event.Item.Name != "list_dir" {
+			t.Fatalf("function call identity missing from output_item.added: %#v", event.Item)
+		}
+		if event.Item.Arguments != "" || event.Item.Status != "in_progress" {
+			t.Fatalf("unexpected added function call state: %#v", event.Item)
+		}
+		return
+	}
+	t.Fatalf("function-call response.output_item.added event missing: %s", rr.Body.String())
 }
 
 func TestResponsesStreamEmitsFailedForInnerRequestError(t *testing.T) {

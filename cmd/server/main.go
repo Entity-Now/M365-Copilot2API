@@ -41,7 +41,7 @@ func main() {
 		Addr:              listen,
 		Handler:           s.Routes(),
 		ReadHeaderTimeout: 10 * time.Second,
-		ReadTimeout:       30 * time.Second,
+		ReadTimeout:       0, // slow-clients can legitimately take minutes to upload large bodies; IdleTimeout covers inter-request staleness.
 		IdleTimeout:       120 * time.Second,
 		WriteTimeout:      0, // streaming endpoints need an open-ended write window.
 	}

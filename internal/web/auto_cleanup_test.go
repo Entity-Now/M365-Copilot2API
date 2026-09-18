@@ -96,6 +96,22 @@ func TestUnbindByConversationRemovesBindings(t *testing.T) {
 	}
 }
 
+func TestConversationAccountStateReportsAmbiguousAccounts(t *testing.T) {
+	s := newTestServerForAutoCleanup(t)
+	reqFor := func(key string) *http.Request {
+		r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+		r.Header.Set("Authorization", "Bearer "+key)
+		return r
+	}
+	s.sessionResolver.Bind("sess-a", "shared-conversation", "account-a", &oaiReq{Messages: []oaiMsg{{Role: "user", Content: "a"}}}, "", reqFor("key-a"))
+	s.sessionResolver.Bind("sess-b", "shared-conversation", "account-b", &oaiReq{Messages: []oaiMsg{{Role: "user", Content: "b"}}}, "", reqFor("key-b"))
+
+	accountID, found, ambiguous := s.sessionResolver.ConversationAccountState("shared-conversation")
+	if accountID != "" || !found || !ambiguous {
+		t.Fatalf("accountID=%q found=%v ambiguous=%v, want empty,true,true", accountID, found, ambiguous)
+	}
+}
+
 func TestWhitelistPersistsAcrossReload(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "conversations.json")
