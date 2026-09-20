@@ -1,8 +1,16 @@
 package chathub
 
 import (
+	"context"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
+
+	"github.com/gorilla/websocket"
 )
 
 func TestCommonPrefixLenStopsAtUTF8RuneBoundary(t *testing.T) {
@@ -92,5 +100,58 @@ func TestMessageReferenceMapDeduplicatesByKey(t *testing.T) {
 	references["ref-1"] = Reference{TargetLink: "https://example.com/new", Title: "New"}
 	if len(references) != 1 || references["ref-1"].TargetLink != "https://example.com/new" {
 		t.Fatalf("references were not deduplicated by key: %#v", references)
+	}
+}
+
+func TestNonPrefixSnapshotDoesNotDuplicateStreamedText(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		_, _, _ = conn.ReadMessage()
+		_ = conn.WriteMessage(websocket.TextMessage, []byte("{}\x1e"))
+		_, _, _ = conn.ReadMessage()
+		_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"type":1,"target":"update","arguments":[{"writeAtCursor":"Hello world! Draft one."}]}`+"\x1e"))
+		// Upstream sends a revised snapshot that diverges at "world" -> "there"
+		_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"type":1,"target":"update","arguments":[{"messages":[{"author":"bot","text":"Hello there! Revised text."}]}]}`+"\x1e"))
+		_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"type":2,"item":{"result":{"value":"Success","message":"Hello world! Draft one."}}}`+"\x1e"))
+		_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"type":3,"invocationId":"0"}`+"\x1e"))
+	}))
+	defer server.Close()
+
+	tlsConfig := server.TLS.Clone()
+	tlsConfig.InsecureSkipVerify = true
+
+	client := NewClient()
+	client.Dialer = &websocket.Dialer{
+		TLSClientConfig: tlsConfig,
+		NetDialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, network, server.Listener.Addr().String())
+		},
+	}
+
+	var emitted []string
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	acc := Account{AccessToken: "mock-token", OID: "mock-oid", TID: "mock-tid"}
+	req := Request{Text: "test prompt"}
+	res, err := client.ChatWithDelta(ctx, acc, req, func(d string) error {
+		emitted = append(emitted, d)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	joined := strings.Join(emitted, "")
+	if joined != "Hello world! Draft one." {
+		t.Fatalf("emitted stream has duplicate/corrupted content: %q", joined)
+	}
+	if res.Text != "Hello world! Draft one." {
+		t.Fatalf("result text = %q, want %q", res.Text, "Hello world! Draft one.")
 	}
 }

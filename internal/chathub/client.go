@@ -646,9 +646,10 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 		return nil
 	}
 	// ChatHub signals text either as a full snapshot or as cursor rewrites.
-	// Only the portion not already streamed may be emitted; naive prefix
-	// checks misfire when upstream rewrites the whole buffer, which duplicated
-	// answers (AAA…). Match any overlap and emit the tail.
+	// Only the portion not already streamed may be emitted. In an append-only
+	// SSE stream, already-sent deltas cannot be retracted; non-prefix rewrites
+	// are skipped during streaming to prevent duplicating content, and reconciled
+	// against the authoritative final message upon completion (see finalizeText).
 	// Upstream rate limiting surfaces as a human-readable notice on the text
 	// channel instead of an HTTP 429. Detect it before any real content has
 	// streamed so the web layer can fail over rather than answer with it.
@@ -712,19 +713,6 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 		}
 		if len(snapshot) <= len(cur) {
 			return nil
-		}
-		overlap := commonPrefixLen(cur, snapshot)
-		if overlap > 0 {
-			return emitDelta(snapshot[overlap:])
-		}
-		// Non-prefix rewrite: previous incremental deltas may have been reordered.
-		// Instead of dropping, emit the tail after cur length at rune boundary so no characters are lost.
-		n := len(cur)
-		for n > 0 && n < len(snapshot) && !utf8.RuneStart(snapshot[n]) {
-			n--
-		}
-		if n < len(snapshot) && utf8.ValidString(snapshot[n:]) {
-			return emitDelta(snapshot[n:])
 		}
 		skippedSnapshots++
 		if chTrace {
