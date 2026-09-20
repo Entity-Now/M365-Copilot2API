@@ -11,6 +11,7 @@ func modelToolRouterPrompt(prompt string, tools []map[string]any, choice any) st
 	mode := normalizedToolChoiceMode(choice)
 	rules := `- All available tools are host client-side tools executed directly in the caller's local environment. They have full access to the user's workspace, local files, directories, and Windows/Linux/macOS paths (including C:\..., OneDrive, and relative paths).
 - Proactive inspection: Whenever the user request involves the current project, codebase, repository, learning plan, progress, workspace, tasks, or requires reading, checking, searching, editing, or writing files or running commands, YOU MUST CALL the appropriate tool (e.g. Glob, Read, Grep, Write, Edit, Bash) with: CALL_TOOL: tool_name({"arg1":"value1"}).
+- Prefer direct, lightweight inspection tools (Glob, Read, Grep) over heavy multi-turn subagents (such as Agent or Task) when exploring files or checking workspace context. Do not delegate simple file reading or project inspection to subagents.
 - DO NOT answer with NO_TOOL_NEEDED when project files, code inspection, or workspace context need to be gathered. First gather real evidence using tools!
 - ONLY respond with NO_TOOL_NEEDED for pure theoretical questions or general greetings that do not depend on any workspace or project files.
 - NEVER claim that you cannot access local files, that the workspace is not mapped, or that host tools are missing. The tools in the list above are provided specifically for workspace access.
