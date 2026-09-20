@@ -9,8 +9,11 @@ import (
 func modelToolRouterPrompt(prompt string, tools []map[string]any, choice any) string {
 	defs, _ := json.Marshal(tools)
 	mode := normalizedToolChoiceMode(choice)
-	rules := `- If a tool is needed, respond with: CALL_TOOL: tool_name({"arg1":"value1"})
-- If no tool is needed, respond with: NO_TOOL_NEEDED
+	rules := `- All available tools are host client-side tools executed directly in the caller's local environment. They have full access to the user's workspace, local files, directories, and Windows/Linux/macOS paths (including C:\..., OneDrive, and relative paths).
+- Whenever the user request involves viewing, reading, writing, editing, appending, creating files or running commands, YOU MUST call the appropriate tool with: CALL_TOOL: tool_name({"arg1":"value1"})
+- NEVER claim that you cannot access local files, that the workspace is not mapped, or that host tools are missing. The tools in the list above are provided specifically for workspace access.
+- If a tool is needed, respond with: CALL_TOOL: tool_name({"arg1":"value1"})
+- If no tool is needed (e.g. general conversational greeting or pure theoretical question), respond with: NO_TOOL_NEEDED
 - Only use tools from the available list above
 - Validate all arguments against the tool's schema
 - Do not invent tools that are not in the list`
@@ -18,8 +21,8 @@ func modelToolRouterPrompt(prompt string, tools []map[string]any, choice any) st
 	// acted upon, so re-invoking those tools would duplicate work.
 	if strings.Contains(prompt, "tool_calls:") || strings.Contains(prompt, "tool[call_") {
 		rules += `
-- Completed evidence must not be repeated: tool_calls/tool[call_x] rows are prior results already delivered to the user, never re-invoke them
-- Only start a new tool call when fresh unfinished work remains on the current request`
+- Completed evidence must not be repeated: tool_calls/tool[call_x] rows are prior results already delivered to the user, never re-invoke them unless the user explicitly requests a retry or further modifications
+- Only start a new tool call when fresh unfinished work remains on the current request (e.g. creating remaining files, updating pending items, or retrying a requested operation)`
 	}
 	return fmt.Sprintf(`You are a tool selection assistant. Based on the user request, decide which tool to call next.
 

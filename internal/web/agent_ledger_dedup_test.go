@@ -39,3 +39,35 @@ func TestRouterContextStaysCompact(t *testing.T) {
 		t.Fatal("router context is empty")
 	}
 }
+
+func TestFilterCompletedCallsAllowsFailedRetries(t *testing.T) {
+	ledger := agentLedger{Completed: []toolEvidence{{
+		Name:      "workspace_write_file",
+		Arguments: `{"path":"main.go","content":"x"}`,
+		Failed:    true,
+	}}}
+	calls := []detectedToolCall{
+		{Name: "workspace_write_file", Arguments: []byte(`{"path":"main.go","content":"x"}`)},
+	}
+	got := filterCompletedCalls(calls, ledger)
+	if len(got) != 1 {
+		t.Fatalf("failed tool call should be allowed to retry, got: %#v", got)
+	}
+}
+
+func TestActiveLedgerAllowsCrossTurnRetries(t *testing.T) {
+	msgs := []oaiMsg{
+		{Role: "user", Content: "write main.go"},
+		{Role: "assistant", ToolCalls: []map[string]any{{"id": "c1", "type": "function", "function": map[string]any{"name": "write_file", "arguments": "{\"path\":\"main.go\"}"}}}},
+		{Role: "tool", ToolCallID: "c1", Content: "ok"},
+		{Role: "user", Content: "please retry writing main.go"},
+	}
+	active := buildAgentLedger(activeMessages(msgs))
+	calls := []detectedToolCall{
+		{Name: "write_file", Arguments: []byte(`{"path":"main.go"}`)},
+	}
+	got := filterCompletedCalls(calls, active)
+	if len(got) != 1 {
+		t.Fatalf("new user turn should allow re-invoking tool, got: %#v", got)
+	}
+}

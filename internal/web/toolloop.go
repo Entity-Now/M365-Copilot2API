@@ -207,10 +207,18 @@ var toolRefusalPatterns = []string{
 	"not available in this session",
 	"工具不可用",
 	"工具未暴露",
+	"未映射",
+	"未映射 windows 工作区",
+	"缺少能够直接访问",
+	"缺少宿主",
+	"无法访问本地文件",
+	"无法直接访问",
+	"没有权限访问本地",
+	"无法修改本地文件",
 }
 
 func isToolRefusal(text string) bool {
-	if len(text) >= 200 {
+	if len(text) >= 1000 {
 		return false
 	}
 	low := strings.ToLower(text)

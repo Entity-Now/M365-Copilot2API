@@ -174,7 +174,7 @@ func canonicalToolArguments(s string) string {
 func (l agentLedger) hasCompleted(name, args string) bool {
 	want := canonicalToolArguments(args)
 	for _, e := range l.Completed {
-		if e.Name == name && canonicalToolArguments(e.Arguments) == want {
+		if !e.Failed && e.Name == name && canonicalToolArguments(e.Arguments) == want {
 			return true
 		}
 	}

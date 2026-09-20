@@ -2121,7 +2121,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	// Ask the upstream model to select and validate the next tool. The gateway
 	// remains tool-agnostic; it only validates and serializes the decision.
 	if planningMode == "router" && len(toolMaps) > 0 && fmt.Sprint(body.ToolChoice) != "none" {
-		routePrompt := modelToolRouterPrompt(answerPrompt+"\n"+ledger.RouterContext(), toolMaps, body.ToolChoice)
+		routePrompt := modelToolRouterPrompt(answerPrompt+"\n"+activeLedger.RouterContext(), toolMaps, body.ToolChoice)
 		routeRes, routeErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: routePrompt, Tone: tone, Attachments: body.Attachments, LicenseType: toolCfg.LicenseType, Scenario: toolCfg.Scenario})
 		if routeErr != nil {
 			if body.AccountID == "" && (IsRateLimited(routeErr) || IsAuthFailure(routeErr)) {
@@ -2172,10 +2172,10 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		calls = filterCompletedCalls(calls, ledger)
+		calls = filterCompletedCalls(calls, activeLedger)
 		calls, _ = validateCalls("router", calls)
 		if len(calls) > 0 {
-			scope := fmt.Sprintf("%d:%v", len(body.Messages), completedCallIDs(ledger))
+			scope := fmt.Sprintf("%d:%v", len(body.Messages), completedCallIDs(activeLedger))
 			for i := range calls {
 				calls[i].ID = scopedCallID(calls[i].Name, string(calls[i].Arguments), i, scope)
 			}
@@ -2190,15 +2190,15 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			defs, _ := json.Marshal(toolMaps)
 			retryText := `Select at least one required next tool call from FUNCTION_DEFINITIONS. Validate every argument against its schema. Return JSON only as {"calls":[{"name":"function_name","arguments":{}}]}.
 APPLICATION_REQUEST_AND_EVIDENCE:
-` + prompt + "\n" + ledger.RouterContext() + "\nFUNCTION_DEFINITIONS:\n" + string(defs)
+` + prompt + "\n" + activeLedger.RouterContext() + "\nFUNCTION_DEFINITIONS:\n" + string(defs)
 			retryRes, retryErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: retryText, Tone: tone, Attachments: body.Attachments, LicenseType: toolCfg.LicenseType, Scenario: toolCfg.Scenario})
 			if retryErr == nil {
 				s.dropTransientConversation(retryRes.ConversationID)
 				calls, parsed = parseModelToolDecision(retryRes.Text, toolMaps, body.ToolChoice)
-				calls = filterCompletedCalls(calls, ledger)
+				calls = filterCompletedCalls(calls, activeLedger)
 				calls, _ = validateCalls("router", calls)
 				if parsed && len(calls) > 0 {
-					scope := fmt.Sprintf("%d:%v:required-retry", len(body.Messages), completedCallIDs(ledger))
+					scope := fmt.Sprintf("%d:%v:required-retry", len(body.Messages), completedCallIDs(activeLedger))
 					for i := range calls {
 						calls[i].ID = scopedCallID(calls[i].Name, string(calls[i].Arguments), i, scope)
 					}
@@ -2215,7 +2215,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 		}
 	}
 	if body.Stream {
-		answerReq := buildAnswerRequest(answerPrompt, tone, body, ledger, planningMode, mcpServerURL, s.settings.get(), s.featureFlags(), localeInfo, body.Metadata != nil && body.Metadata.CopilotTempSession)
+		answerReq := buildAnswerRequest(answerPrompt, tone, body, activeLedger, planningMode, mcpServerURL, s.settings.get(), s.featureFlags(), localeInfo, body.Metadata != nil && body.Metadata.CopilotTempSession)
 		answerPrompt = answerReq.Text
 		log.Printf("[req-trace] id=%s stage=answer_start prompt_len=%d native_tools=%d mcp=%s", requestID, len(answerPrompt), len(answerReq.Tools), mcpServerURL)
 		id := "chatcmpl-" + uuid.NewString()
@@ -2464,7 +2464,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 		s.storeConvCache(convCacheNamespace, acc.ID, convCacheModel, res, tone, body.Messages, convReused)
 		return
 	}
-	answerReq := buildAnswerRequest(answerPrompt, tone, body, ledger, planningMode, mcpServerURL, s.settings.get(), s.featureFlags(), localeInfo, body.Metadata != nil && body.Metadata.CopilotTempSession)
+	answerReq := buildAnswerRequest(answerPrompt, tone, body, activeLedger, planningMode, mcpServerURL, s.settings.get(), s.featureFlags(), localeInfo, body.Metadata != nil && body.Metadata.CopilotTempSession)
 	answerPrompt = answerReq.Text
 	var res chathub.Result
 	if body.Stream {
