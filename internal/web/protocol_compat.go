@@ -3,6 +3,7 @@ package web
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 
 	"m365-copilot2api/internal/chathub"
@@ -34,15 +35,14 @@ type responsesRequest struct {
 
 func (r responsesRequest) openAI() (oaiReq, error) {
 	o := oaiReq{Model: r.Model, AccountID: r.AccountID, Stream: r.Stream, ToolChoice: r.ToolChoice, ParallelToolCalls: r.ParallelToolCalls, Reasoning: r.Reasoning, User: r.User}
-	if len(r.Text) != 0 {
-		return o, fmt.Errorf("unsupported_parameter: text")
-	}
-	if r.ServiceTier != "" {
-		return o, fmt.Errorf("unsupported_parameter: service_tier")
-	}
-	if r.ContextManagement != nil {
-		return o, fmt.Errorf("unsupported_parameter: context_management")
-	}
+	// include/text/service_tier/context_management are parsed but deliberately
+	// ignored: the gateway has no semantics for them and newer Codex clients
+	// always send include (e.g. reasoning.encrypted_content) on /responses.
+	// Rejecting them turns every Codex request into a 400, so tolerate them.
+	_ = r.Include
+	_ = r.Text
+	_ = r.ServiceTier
+	_ = r.ContextManagement
 	if r.Temperature != nil {
 		o.Temperature = r.Temperature
 	}
@@ -150,8 +150,14 @@ func (r responsesRequest) openAI() (oaiReq, error) {
 		f := map[string]any{"name": t["name"], "description": t["description"], "parameters": t["parameters"]}
 		if typ == "custom" && name == "exec" {
 			return o, fmt.Errorf("unsupported_parameter: tools")
-		} else if typ != "function" {
-			return o, fmt.Errorf("unsupported_parameter: tools")
+		}
+		if typ != "function" {
+			// Newer Codex clients declare non-function tools (local_shell,
+			// custom apply_patch, web_search, ...). The gateway executes only
+			// client-side function tools, so skip the rest instead of
+			// rejecting the whole request with 400.
+			log.Printf("[responses] skipping unsupported tool type %q (name=%q)", typ, name)
+			continue
 		}
 		b, _ := json.Marshal(f)
 		o.Tools = append(o.Tools, chathub.Tool{Type: typ, Function: b})

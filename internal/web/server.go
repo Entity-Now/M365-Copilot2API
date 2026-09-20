@@ -64,6 +64,7 @@ func (s *Server) featureFlags() chathub.FeatureFlags {
 	}
 }
 
+const maxAccountProbe = 16
 const rateLimitProbePrompt = "Reply with exactly: OK"
 
 func (s *Server) logThrottlingWarning(accountID string, throttling any) {
@@ -400,6 +401,8 @@ func (s *Server) Routes() http.Handler {
 	m.HandleFunc("/api/admin/deployment/check", s.deploymentCheck)
 	m.HandleFunc("/api/admin/debug/logs", s.debugList)
 	m.HandleFunc("/api/admin/debug/detail", s.debugDetail)
+	m.HandleFunc("/api/admin/syslogs", s.handleSysLogs)
+	m.HandleFunc("/api/admin/syslogs/clear", s.handleSysLogsClear)
 	// Microsoft Graph batch user creation is temporarily disabled and will be restored in a later version.
 	// Keep the implementation files intact, but do not register readiness, authorization, or batch routes.
 	m.HandleFunc("/api/health", s.health)
@@ -1313,6 +1316,77 @@ func (s *Server) nextHealthyAccount(avoidID string, accountIDs []string) (auth.A
 	return auth.AccountToken{}, fmt.Errorf("no healthy account available for failover")
 }
 
+func (s *Server) resolveImageAccount(accountIDs []string, accountID string) (auth.AccountToken, error) {
+	if accountID != "" {
+		return s.resolveAccount(accountID)
+	}
+	allowed := make(map[string]struct{}, len(accountIDs))
+	for _, id := range accountIDs {
+		if id = strings.TrimSpace(id); id != "" {
+			allowed[id] = struct{}{}
+		}
+	}
+	for i := 0; i < maxAccountProbe; i++ {
+		acc, ok := s.tokens.Next()
+		if !ok {
+			return auth.AccountToken{}, fmt.Errorf("no accounts; login first")
+		}
+		if len(allowed) > 0 {
+			if _, ok := allowed[acc.ID]; !ok {
+				continue
+			}
+		}
+		if s.accountAvailable(acc.ID) && (s.accountPool == nil || s.accountPool.ImageGenAvailable(acc.ID)) {
+			result, err := s.tokens.EnsureValid(acc.ID)
+			if err == nil {
+				s.mu.Lock()
+				s.lastHealthyAccount = acc.ID
+				s.mu.Unlock()
+				return result, nil
+			}
+		}
+	}
+	return auth.AccountToken{}, &UpstreamHTTPError{Status: 429, RetryAfter: 60, Body: "all accounts are cooling down or image quota exhausted; try again later"}
+}
+
+func (s *Server) nextHealthyImageAccount(avoidID string, accountIDs []string) (auth.AccountToken, error) {
+	allowed := make(map[string]struct{}, len(accountIDs))
+	for _, id := range accountIDs {
+		if id = strings.TrimSpace(id); id != "" {
+			allowed[id] = struct{}{}
+		}
+	}
+	for i := 0; i < maxAccountProbe; i++ {
+		acc, ok := s.tokens.Next()
+		if !ok {
+			return auth.AccountToken{}, fmt.Errorf("no accounts; login first")
+		}
+		if avoidID != "" && acc.ID == avoidID {
+			continue
+		}
+		if len(allowed) > 0 {
+			if _, ok := allowed[acc.ID]; !ok {
+				continue
+			}
+		}
+		if !s.tokens.ScheduleEnabled(acc.ID) || !s.accountAvailable(acc.ID) || (s.accountPool != nil && !s.accountPool.ImageGenAvailable(acc.ID)) {
+			continue
+		}
+		result, err := s.tokens.EnsureValid(acc.ID)
+		if err != nil {
+			if s.accountPool != nil {
+				s.accountPool.ReleaseProbe(acc.ID)
+			}
+			continue
+		}
+		return result, nil
+	}
+	if len(allowed) > 0 {
+		return auth.AccountToken{}, fmt.Errorf("no bound image account available")
+	}
+	return auth.AccountToken{}, fmt.Errorf("no healthy image account available for failover")
+}
+
 type chatBody struct {
 	AccountID             string                   `json:"accountId"`
 	Message               string                   `json:"message"`
@@ -1340,8 +1414,19 @@ type responseFormat struct {
 	JSONSchema map[string]any `json:"json_schema,omitempty"`
 }
 
+func isImageModel(model string) bool {
+	switch strings.ToLower(strings.TrimSpace(model)) {
+	case "gpt-image-2", "image-2", "dall-e-3", "dall-e-2", "designer":
+		return true
+	default:
+		return false
+	}
+}
+
 func modelTone(model string) string {
 	switch strings.ToLower(strings.TrimSpace(model)) {
+	case "gpt-image-2", "image-2", "dall-e-3", "dall-e-2", "designer":
+		return "Magic"
 	case "gpt-5.2":
 		return "Gpt_5_2_Chat"
 	case "gpt-5.2-reasoning":
@@ -1861,7 +1946,11 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	// single message.text field. This keeps system/developer instructions,
 	// history, and the current user turn distinguishable.
 	var prompt string
-	prompt, body.Attachments = flattenPromptMessages(body.Messages, body.Attachments)
+	if isImageModel(body.Model) {
+		prompt, body.Attachments = extractImagePrompt(body.Messages, body.Attachments)
+	} else {
+		prompt, body.Attachments = flattenPromptMessages(body.Messages, body.Attachments)
+	}
 	log.Printf("[req-trace] id=%s stage=prompt_flattened prompt_len=%d attachments=%d", requestID, len(prompt), len(body.Attachments))
 	fmt.Printf("[multimodal-entry] messages=%d attachments=%d prompt_len=%d\n", len(body.Messages), len(body.Attachments), len(prompt))
 	prompt = strings.TrimSpace(prompt)
@@ -1939,7 +2028,9 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	accountID := body.AccountID
 	accountIDs := s.apiKeys.accountIDs(rawAPIKey(r))
 	var acc auth.AccountToken
-	if len(accountIDs) > 0 {
+	if isImageModel(body.Model) {
+		acc, err = s.resolveImageAccount(accountIDs, accountID)
+	} else if len(accountIDs) > 0 {
 		acc, err = s.resolveBoundAccount(accountIDs, accountID)
 	} else {
 		acc, err = s.resolveAccount(accountID)
@@ -2581,6 +2672,52 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 		if res.Timestamps.RequestSent != "" {
 			_ = sw2.raw(": m365-metrics " + mustJSON(res.Timestamps) + "\n\n")
 		}
+	} else if isImageModel(body.Model) {
+		currentAcc := acc
+		var currentRes chathub.Result
+		var currentErr error
+		for attempt := 0; attempt < maxAccountProbe; attempt++ {
+			reqCopy := answerReq
+			reqCopy.Tone = "Magic"
+			currentRes, currentErr = s.chatWithAccount(ctx, currentAcc.ID, chathub.Account{AccessToken: currentAcc.AccessToken, OID: currentAcc.OID, TID: currentAcc.TID}, reqCopy)
+			if currentErr == nil {
+				if len(currentRes.Images) == 0 {
+					if urls := extractImageURLs(currentRes.RawResult); len(urls) > 0 {
+						currentRes.Images = urls
+					}
+				}
+				if len(currentRes.Images) == 0 {
+					if urls := extractImageURLs(currentRes.Text); len(urls) > 0 {
+						currentRes.Images = urls
+					}
+				}
+			}
+			if currentErr == nil && len(currentRes.Images) > 0 {
+				res = currentRes
+				acc = currentAcc
+				err = nil
+				break
+			}
+			log.Printf("[image-model-failover] account %s (%s) failed or returned no images (err=%v, images=%d), trying next account...", currentAcc.ID, currentAcc.Email, currentErr, len(currentRes.Images))
+			if s.accountPool != nil && (errors.Is(currentErr, chathub.ErrImageLimit) || isImageLimitNotice(currentRes.Text)) {
+				s.accountPool.MarkImageLimited(currentAcc.ID)
+			}
+			if body.AccountID != "" {
+				res = currentRes
+				acc = currentAcc
+				err = currentErr
+				break
+			}
+			next, nerr := s.nextHealthyImageAccount(currentAcc.ID, accountIDs)
+			if nerr != nil || next.ID == "" {
+				log.Printf("[image-model-failover] no more healthy image accounts available after attempt %d", attempt+1)
+				res = currentRes
+				acc = currentAcc
+				err = currentErr
+				break
+			}
+			currentAcc = next
+		}
 	} else {
 		res, err = s.chatWithAccount(ctx, acc.ID, account, answerReq)
 		if IsEmptyCompletion(err) && tone != "magic" {
@@ -2735,6 +2872,21 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 	if isImageLimitNotice(res.Text) {
 		if s.accountPool != nil {
 			s.accountPool.MarkImageLimited(acc.ID)
+		}
+	}
+	if len(res.Images) == 0 {
+		if urls := extractImageURLs(res.RawResult); len(urls) > 0 {
+			res.Images = urls
+		}
+	}
+	if len(res.Images) == 0 {
+		if urls := extractImageURLs(res.Text); len(urls) > 0 {
+			res.Images = urls
+		}
+	}
+	for _, imgURL := range res.Images {
+		if !strings.Contains(res.Text, imgURL) {
+			res.Text = strings.TrimSpace(res.Text) + "\n\n![image](" + imgURL + ")"
 		}
 	}
 	if len(toolMaps) > 0 && !completionEvidenceAllows(res.Text, ledger) {

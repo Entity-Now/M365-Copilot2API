@@ -226,8 +226,8 @@ func positiveEnvInt(name string, fallback int) int {
 }
 func configuredModelLimits() modelLimits {
 	cfg := currentSettings()
-	contextWindow := cfg.ContextWindow
-	maxOutput := cfg.MaxOutputTokens
+	contextWindow := positiveEnvInt("M365_CONTEXT_WINDOW", cfg.ContextWindow)
+	maxOutput := positiveEnvInt("M365_MAX_OUTPUT_TOKENS", cfg.MaxOutputTokens)
 	if maxOutput >= contextWindow {
 		maxOutput = contextWindow / 8
 		if maxOutput < 1 {

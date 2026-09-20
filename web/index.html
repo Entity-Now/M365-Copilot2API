@@ -319,6 +319,7 @@ body{background:var(--bg);color:var(--text);font-family:"Inter","SF Pro Display"
     <nav class="nav">
       <button data-page="proxies" onclick="showPage('proxies')"><i data-lucide="globe" style="width:16px;height:16px;flex-shrink:0"></i><span>代理池</span></button>
       <button data-page="modeltest" onclick="showPage('modeltest')"><i data-lucide="flask-conical" style="width:16px;height:16px;flex-shrink:0"></i><span>模型测试</span></button>
+      <button data-page="logs" onclick="showPage('logs')"><i data-lucide="file-text" style="width:16px;height:16px;flex-shrink:0"></i><span>系统日志</span></button>
       <button data-page="settings" onclick="showPage('settings')"><i data-lucide="settings" style="width:16px;height:16px;flex-shrink:0"></i><span>设置</span></button>
     </nav>
     <div class="sidebar-foot">v0.4.0</div>
@@ -657,6 +658,30 @@ if (response.output_text) {
         </div>
       </section>
 
+      <!-- System Logs -->
+      <section id="page-logs" style="display:none">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;gap:12px;flex-wrap:wrap">
+          <div><h2 style="font-size:18px;font-weight:700">Gateway System Logs</h2><p style="font-size:12px;color:var(--muted);margin-top:2px">实时网关控制台日志、底网报错、报错堆栈与 ChatHub WebSocket 追踪</p></div>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <input class="form-input" id="sysLogSearch" placeholder="搜索关键字..." style="width:160px" oninput="renderSysLogs()">
+            <select id="sysLogLevel" class="form-input" style="width:110px" onchange="renderSysLogs()">
+              <option value="ALL">全部级别</option>
+              <option value="ERROR">错误 ERROR</option>
+              <option value="WARN">警告 WARN</option>
+              <option value="INFO">信息 INFO</option>
+              <option value="DEBUG">调试 DEBUG</option>
+            </select>
+            <label style="font-size:12px;display:inline-flex;align-items:center;gap:4px;cursor:pointer"><input type="checkbox" id="sysLogAutoRefresh" checked onchange="toggleSysLogAutoRefresh()"> 自动刷新</label>
+            <label style="font-size:12px;display:inline-flex;align-items:center;gap:4px;cursor:pointer"><input type="checkbox" id="sysLogAutoScroll" checked> 滚动锁定</label>
+            <button class="btn" onclick="fetchSysLogs(true)"><i data-lucide="refresh-cw" style="width:14px;height:14px"></i> 刷新</button>
+            <button class="btn danger" onclick="clearSysLogs()"><i data-lucide="trash-2" style="width:14px;height:14px"></i> 清空</button>
+          </div>
+        </div>
+        <div style="background:#0f172a;color:#f8fafc;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px;line-height:1.65;padding:16px;border-radius:12px;height:560px;overflow-y:auto;border:1px solid #1e293b;box-shadow:var(--shadow)" id="sysLogConsole">
+          <div style="color:#64748b;font-style:italic">正在连接系统日志缓冲区...</div>
+        </div>
+      </section>
+
       <!-- Settings -->
       <section id="page-settings" style="display:none">
         <h2 style="font-size:18px;font-weight:700;margin-bottom:16px">Settings</h2>
@@ -669,7 +694,12 @@ if (response.output_text) {
 <!-- Key Modal -->
 <div class="modal-overlay" id="keyModal">
   <div class="modal">
-    <h3>Create API key</h3>
+    <div class="modal-head">
+      <div>
+        <h3>Create API key</h3>
+      </div>
+      <button type="button" class="modal-close" onclick="closeKeyModal()"><i data-lucide="x" style="width:15px;height:15px"></i></button>
+    </div>
     <p class="subtitle">此密钥用于认证 OpenAI / Anthropic 兼容接口的请求。完整密钥仅显示一次——请立即复制保存。创建后可在密钥列表中点击"使用密钥"查看客户端配置示例。</p>
     <form onsubmit="createKey(event)">
       <div class="form-group">
@@ -684,6 +714,9 @@ if (response.output_text) {
     </form>
     <div id="keyResult" style="display:none">
       <div class="highlight-box"><b>Copy and save this key now</b><div class="copy-field"><input class="form-input" id="keyValue" readonly><button class="btn-sm btn" onclick="copyKey()">Copy</button></div></div>
+      <div class="modal-actions" style="margin-top:12px">
+        <button type="button" class="btn primary" onclick="closeKeyModal()">完成</button>
+      </div>
     </div>
   </div>
 </div>
@@ -720,7 +753,7 @@ if (response.output_text) {
       <button class="modal-close" onclick="closeUseKey()"><i data-lucide="x" style="width:15px;height:15px"></i></button>
     </div>
     <div class="copy-field">
-      <input class="form-input" id="useKeyVal" readonly onclick="this.select()">
+      <input class="form-input" id="useKeyVal" placeholder="粘贴或输入完整密钥（自动联动下方配置）" oninput="renderUkeFiles()" onclick="this.select()">
       <button class="btn btn-sm" onclick="copyUseKey()">Copy</button>
     </div>
     <div class="uke-tabs" id="useKeyClients"></div>
@@ -732,8 +765,39 @@ if (response.output_text) {
 <div class="notice" id="notice" style="display:none"></div>
 
 <script>
+async function safeCopy(text) {
+  if (!text) { showNotice('内容为空', 'error'); return; }
+  if (navigator.clipboard && window.isSecureContext) {
+    try {
+      await navigator.clipboard.writeText(text);
+      showNotice('已复制', 'success');
+      return;
+    } catch(e) {}
+  }
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.left = '-9999px';
+    ta.style.top = '-9999px';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    const ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+    if (ok) {
+      showNotice('已复制', 'success');
+    } else {
+      showNotice('复制失败，请手动选择复制', 'error');
+    }
+  } catch(e) {
+    showNotice('复制失败，请手动选择复制', 'error');
+  }
+}
+
 const $=id=>document.getElementById(id);
-const pages={dashboard:'控制台',usage:'用量',accounts:'账号',apikeys:'API 密钥',conversations:'对话管理',proxies:'代理池',modeltest:'模型测试',settings:'设置'};
+const pages={dashboard:'控制台',usage:'用量',accounts:'账号',apikeys:'API 密钥',conversations:'对话管理',proxies:'代理池',modeltest:'模型测试',logs:'系统日志',settings:'设置'};
 const localeStorageKey='m365_locale';
 const localeSelectionKey='m365_locale_selected';
 const SUPPORTED_LOCALES=['en','zh-CN','zh-TW','ja','ko','es','fr','de','pt-BR','ru','ar'];
@@ -923,7 +987,206 @@ const localeText={
   'Not checked': {'zh-CN':'未检测','zh-TW':'未檢測','ja':'未確認','ko':'확인 안 됨','es':'Sin comprobar','fr':'Non vérifié','de':'Nicht geprüft','pt-BR':'Não verificado','ru':'Не проверено','ar':'لم يتم التحقق'},
   'Cooling down': {'zh-CN':'冷却中','zh-TW':'冷卻中','ja':'クールダウン中','ko':'쿨다운 중','es':'Enfriando','fr':'En attente','de':'Wird abgekühlt','pt-BR':'Resfriando','ru':'Ожидание','ar':'جارٍ التهدئة'},
   'Testing…': {'zh-CN':'测试中…','zh-TW':'測試中…','ja':'テスト中…','ko':'테스트 중…','es':'Probando…','fr':'Test en cours…','de':'Wird getestet…','pt-BR':'Testando…','ru':'Тестирование…','ar':'جارٍ الاختبار…'},
-  'Failed': {'zh-CN':'失败','zh-TW':'失敗','ja':'失敗','ko':'실패','es':'Fallido','fr':'Échec','de':'Fehlgeschlagen','pt-BR':'Falhou','ru':'Ошибка','ar':'فشل'}
+  'Failed': {'zh-CN':'失败','zh-TW':'失敗','ja':'失敗','ko':'실패','es':'Fallido','fr':'Échec','de':'Fehlgeschlagen','pt-BR':'Falhou','ru':'Ошибка','ar':'فشل'},
+  'Supported formats:': {'zh-CN':'已支持的格式：','zh-TW':'已支援的格式：','ja':'対応フォーマット:','ko':'지원 형식:','es':'Formatos admitidos:','fr':'Formats pris en charge :','de':'Unterstützte Formate:','pt-BR':'Formatos suportados:','ru':'Поддерживаемые форматы:','ar':'الصيغ المدعومة:'},
+  'Login successful': {'zh-CN':'登录成功','zh-TW':'登入成功','ja':'ログインに成功しました','ko':'로그인 성공','es':'Inicio de sesión correcto','fr':'Connexion réussie','de':'Anmeldung erfolgreich','pt-BR':'Login bem-sucedido','ru':'Вход выполнен','ar':'تم تسجيل الدخول بنجاح'},
+  'Deleted': {'zh-CN':'已删除','zh-TW':'已刪除','ja':'削除しました','ko':'삭제됨','es':'Eliminado','fr':'Supprimé','de':'Gelöscht','pt-BR':'Excluído','ru':'Удалено','ar':'تم الحذف'},
+  'Copied': {'zh-CN':'已复制','zh-TW':'已複製','ja':'コピーしました','ko':'복사됨','es':'Copiado','fr':'Copié','de':'Kopiert','pt-BR':'Copiado','ru':'Скопировано','ar':'تم النسخ'},
+  'curl copied': {'zh-CN':'curl 已复制','zh-TW':'curl 已複製','ja':'curl をコピーしました','ko':'curl이 복사되었습니다','es':'curl copiado','fr':'curl copié','de':'curl kopiert','pt-BR':'curl copiado','ru':'curl скопирован','ar':'تم نسخ curl'},
+  'Settings saved': {'zh-CN':'设置已保存','zh-TW':'設定已儲存','ja':'設定を保存しました','ko':'설정이 저장되었습니다','es':'Ajustes guardados','fr':'Paramètres enregistrés','de':'Einstellungen gespeichert','pt-BR':'Configurações salvas','ru':'Настройки сохранены','ar':'تم حفظ الإعدادات'},
+  'Name cannot be empty': {'zh-CN':'名称不能为空','zh-TW':'名稱不能為空','ja':'名前は空にできません','ko':'이름은 비워둘 수 없습니다','es':'El nombre no puede estar vacío','fr':'Le nom ne peut pas être vide','de':'Der Name darf nicht leer sein','pt-BR':'O nome não pode estar vazio','ru':'Имя не может быть пустым','ar':'لا يمكن أن يكون الاسم فارغًا'},
+  'Delete this account?': {'zh-CN':'确定删除此账号？','zh-TW':'確定刪除此帳號？','ja':'このアカウントを削除しますか？','ko':'이 계정을 삭제하시겠습니까?','es':'¿Eliminar esta cuenta?','fr':'Supprimer ce compte ?','de':'Dieses Konto löschen?','pt-BR':'Excluir esta conta?','ru':'Удалить этот аккаунт?','ar':'حذف هذا الحساب؟'},
+  'Delete this key?': {'zh-CN':'确定删除此密钥？','zh-TW':'確定刪除此金鑰？','ja':'このキーを削除しますか？','ko':'이 키를 삭제하시겠습니까?','es':'¿Eliminar esta clave?','fr':'Supprimer cette clé ?','de':'Diesen Schlüssel löschen?','pt-BR':'Excluir esta chave?','ru':'Удалить этот ключ?','ar':'حذف هذا المفتاح؟'},
+  'Delete this conversation?': {'zh-CN':'确定删除此对话？','zh-TW':'確定刪除此對話？','ja':'この会話を削除しますか？','ko':'이 대화를 삭제하시겠습니까?','es':'¿Eliminar esta conversación?','fr':'Supprimer cette conversation ?','de':'Diese Unterhaltung löschen?','pt-BR':'Excluir esta conversa?','ru':'Удалить этот разговор?','ar':'حذف هذه المحادثة؟'},
+  'Delete this proxy': {'zh-CN':'确定删除代理','zh-TW':'確定刪除代理','ja':'このプロキシを削除しますか？','ko':'이 프록시를 삭제하시겠습니까?','es':'Eliminar este proxy','fr':'Supprimer ce proxy','de':'Diesen Proxy löschen','pt-BR':'Excluir este proxy','ru':'Удалить этот прокси','ar':'حذف هذا البروكسي'},
+  'Clean up all conversations?': {'zh-CN':'确定清理所有对话？\n每条对话将逐一删除并在终端记录日志。','zh-TW':'確定清理所有對話？\n每條對話將逐一刪除並在終端記錄日誌。','ja':'すべての会話をクリーンアップしますか？\n各会話を順に削除し、ターミナルにログを記録します。','ko':'모든 대화를 정리하시겠습니까?\n각 대화는 하나씩 삭제되며 터미널에 기록됩니다.','es':'¿Limpiar todas las conversaciones?\nCada conversación se eliminará una por una y se registrará en la terminal.','fr':'Nettoyer toutes les conversations ?\nChaque conversation sera supprimée une par une et journalisée dans le terminal.','de':'Alle Unterhaltungen bereinigen?\nJede Unterhaltung wird einzeln gelöscht und im Terminal protokolliert.','pt-BR':'Limpar todas as conversas?\nCada conversa será excluída uma a uma e registrada no terminal.','ru':'Очистить все разговоры?\nКаждый разговор будет удалён по одному с записью в терминале.','ar':'تنظيف جميع المحادثات؟\nسيتم حذف كل محادثة واحدة تلو الأخرى وتسجيلها في الطرفية.'},
+  'Clean up started': {'zh-CN':'开始清理所有对话…','zh-TW':'開始清理所有對話…','ja':'すべての会話のクリーンアップを開始…','ko':'모든 대화 정리 시작…','es':'Iniciando limpieza de todas las conversaciones…','fr':'Début du nettoyage de toutes les conversations…','de':'Bereinigung aller Unterhaltungen gestartet…','pt-BR':'Iniciando limpeza de todas as conversas…','ru':'Начата очистка всех разговоров…','ar':'بدء تنظيف جميع المحادثات…'},
+  'Cleanup finished': {'zh-CN':'清理完成','zh-TW':'清理完成','ja':'クリーンアップ完了','ko':'정리 완료','es':'Limpieza completada','fr':'Nettoyage terminé','de':'Bereinigung abgeschlossen','pt-BR':'Limpeza concluída','ru':'Очистка завершена','ar':'اكتمل التنظيف'},
+  'Failed to fetch conversation list': {'zh-CN':'获取对话列表失败','zh-TW':'取得對話列表失敗','ja':'会話リストの取得に失敗しました','ko':'대화 목록을 가져오지 못했습니다','es':'Error al obtener la lista de conversaciones','fr':'Échec de récupération de la liste des conversations','de':'Unterhaltungsliste konnte nicht abgerufen werden','pt-BR':'Falha ao obter a lista de conversas','ru':'Не удалось получить список разговоров','ar':'فشل في الحصول على قائمة المحادثات'},
+  'Unnamed': {'zh-CN':'未命名','zh-TW':'未命名','ja':'無題','ko':'이름 없음','es':'Sin nombre','fr':'Sans nom','de':'Unbenannt','pt-BR':'Sem nome','ru':'Без имени','ar':'بدون اسم'},
+  'Unnamed conversation': {'zh-CN':'未命名对话','zh-TW':'未命名對話','ja':'無題の会話','ko':'이름 없는 대화','es':'Conversación sin nombre','fr':'Conversation sans nom','de':'Unbenannte Unterhaltung','pt-BR':'Conversa sem nome','ru':'Разговор без названия','ar':'محادثة بدون اسم'},
+  'Please enter a proxy URL': {'zh-CN':'请输入代理地址','zh-TW':'請輸入代理位址','ja':'プロキシアドレスを入力してください','ko':'프록시 주소를 입력하세요','es':'Introduzca la dirección del proxy','fr':'Saisissez l\'adresse du proxy','de':'Proxy-Adresse eingeben','pt-BR':'Digite o endereço do proxy','ru':'Введите адрес прокси','ar':'أدخل عنوان البروكسي'},
+  'Connection failed': {'zh-CN':'连接失败','zh-TW':'連線失敗','ja':'接続に失敗しました','ko':'연결 실패','es':'Error de conexión','fr':'Échec de connexion','de':'Verbindung fehlgeschlagen','pt-BR':'Falha na conexão','ru':'Сбой соединения','ar':'فشل الاتصال'},
+  'Health check finished': {'zh-CN':'健康检查完成','zh-TW':'健康檢查完成','ja':'ヘルスチェック完了','ko':'헬스 체크 완료','es':'Comprobación de estado completada','fr':'Vérification de santé terminée','de':'Integritätsprüfung abgeschlossen','pt-BR':'Verificação de integridade concluída','ru':'Проверка здоровья завершена','ar':'اكتمل فحص الصحة'},
+  'Checking all proxies…': {'zh-CN':'正在检测所有代理…','zh-TW':'正在檢測所有代理…','ja':'すべてのプロキシをチェックしています…','ko':'모든 프록시를 검사하는 중…','es':'Comprobando todos los proxies…','fr':'Vérification de tous les proxys…','de':'Alle Proxys werden geprüft…','pt-BR':'Verificando todos os proxies…','ru':'Проверка всех прокси…','ar':'جارٍ فحص جميع البروكسي…'},
+  'Model test finished': {'zh-CN':'模型测试完成','zh-TW':'模型測試完成','ja':'モデルテスト完了','ko':'모델 테스트 완료','es':'Prueba de modelos completada','fr':'Test des modèles terminé','de':'Modelltest abgeschlossen','pt-BR':'Teste de modelos concluído','ru':'Тест моделей завершён','ar':'اكتمل اختبار النماذج'},
+  'Please load the model list first': {'zh-CN':'请先加载模型列表','zh-TW':'請先載入模型列表','ja':'先にモデルリストを読み込んでください','ko':'먼저 모델 목록을 불러오세요','es':'Cargue primero la lista de modelos','fr':'Chargez d\'abord la liste des modèles','de':'Zuerst die Modulliste laden','pt-BR':'Carregue primeiro a lista de modelos','ru':'Сначала загрузите список моделей','ar':'قم بتحميل قائمة النماذج أولاً'},
+  'Model test succeeded': {'zh-CN':'单测成功','zh-TW':'單測成功','ja':'テスト成功','ko':'테스트 성공','es':'Prueba correcta','fr':'Test réussi','de':'Test erfolgreich','pt-BR':'Teste bem-sucedido','ru':'Тест пройден','ar':'نجح الاختبار'},
+  'Enter the model name to test': {'zh-CN':'输入要测试的模型名','zh-TW':'輸入要測試的模型名','ja':'テストするモデル名を入力','ko':'테스트할 모델 이름을 입력하세요','es':'Introduzca el nombre del modelo a probar','fr':'Saisissez le nom du modèle à tester','de':'Name des zu testenden Modells eingeben','pt-BR':'Digite o nome do modelo a testar','ru':'Введите имя модели для теста','ar':'أدخل اسم النموذج للاختبار'},
+  'Test model': {'zh-CN':'单测模型','zh-TW':'單測模型','ja':'モデルをテスト','ko':'모델 테스트','es':'Probar modelo','fr':'Tester le modèle','de':'Modell testen','pt-BR':'Testar modelo','ru':'Тест модели','ar':'اختبار النموذج'},
+  'Test': {'zh-CN':'测试','zh-TW':'測試','ja':'テスト','ko':'테스트','es':'Probar','fr':'Tester','de':'Testen','pt-BR':'Testar','ru':'Тест','ar':'اختبار'},
+  'Check': {'zh-CN':'检测','zh-TW':'檢測','ja':'チェック','ko':'검사','es':'Comprobar','fr':'Vérifier','de':'Prüfen','pt-BR':'Verificar','ru':'Проверить','ar':'فحص'},
+  'Refresh quota': {'zh-CN':'刷新额度','zh-TW':'重新整理額度','ja':'残量を更新','ko':'할당량 새로고침','es':'Actualizar cuota','fr':'Actualiser le quota','de':'Kontingent aktualisieren','pt-BR':'Atualizar cota','ru':'Обновить квоту','ar':'تحديث الحصة'},
+  'Refreshing…': {'zh-CN':'刷新中…','zh-TW':'重新整理中…','ja':'更新中…','ko':'새로고침 중…','es':'Actualizando…','fr':'Actualisation…','de':'Wird aktualisiert…','pt-BR':'Atualizando…','ru':'Обновление…','ar':'جارٍ التحديث…'},
+  'Quota refreshed': {'zh-CN':'额度已刷新','zh-TW':'額度已重新整理','ja':'残量を更新しました','ko':'할당량이 갱신되었습니다','es':'Cuota actualizada','fr':'Quota actualisé','de':'Kontingent aktualisiert','pt-BR':'Cota atualizada','ru':'Квота обновлена','ar':'تم تحديث الحصة'},
+  'Edit': {'zh-CN':'编辑','zh-TW':'編輯','ja':'編集','ko':'편집','es':'Editar','fr':'Modifier','de':'Bearbeiten','pt-BR':'Editar','ru':'Изменить','ar':'تحرير'},
+  'Bind': {'zh-CN':'绑定','zh-TW':'綁定','ja':'バインド','ko':'바인딩','es':'Vincular','fr':'Lier','de':'Binden','pt-BR':'Vincular','ru':'Привязать','ar':'ربط'},
+  'Use key': {'zh-CN':'使用密钥','zh-TW':'使用金鑰','ja':'キーを使用','ko':'키 사용','es':'Usar clave','fr':'Utiliser la clé','de':'Schlüssel verwenden','pt-BR':'Usar chave','ru':'Использовать ключ','ar':'استخدام المفتاح'},
+  'Disable': {'zh-CN':'禁用','zh-TW':'停用','ja':'無効化','ko':'비활성화','es':'Deshabilitar','fr':'Désactiver','de':'Deaktivieren','pt-BR':'Desativar','ru':'Отключить','ar':'تعطيل'},
+  'Auto-select account': {'zh-CN':'自动选择账号','zh-TW':'自動選擇帳號','ja':'アカウントを自動選択','ko':'자동으로 계정 선택','es':'Seleccionar cuenta automáticamente','fr':'Sélectionner automatiquement un compte','de':'Konto automatisch auswählen','pt-BR':'Selecionar conta automaticamente','ru':'Автовыбор аккаунта','ar':'اختيار الحساب تلقائيًا'},
+  '(empty reply)': {'zh-CN':'（空回复）','zh-TW':'（空回覆）','ja':'（空の返信）','ko':'(빈 응답)','es':'(respuesta vacía)','fr':'(réponse vide)','de':'(leere Antwort)','pt-BR':'(resposta vazia)','ru':'(пустой ответ)','ar':'(رد فارغ)'},
+  'Bind proxy for this account (socks5://, http://, https://). Leave empty to unbind:': {'zh-CN':'为此账号绑定代理（socks5://、http://、https://），留空则解绑：','zh-TW':'為此帳號綁定代理（socks5://、http://、https://），留空則解綁：','ja':'このアカウントにバインドするプロキシ（socks5://、http://、https://）。空欄で解除：','ko':'이 계정에 바인딩할 프록시 (socks5://, http://, https://). 비워두면 바인딩이 해제됩니다:','es':'Vincular proxy para esta cuenta (socks5://, http://, https://). Vacío para desvincular:','fr':'Lier un proxy pour ce compte (socks5://, http://, https://). Vide pour délier :','de':'Proxy für dieses Konto binden (socks5://, http://, https://). Leer zum Lösen:','pt-BR':'Vincular proxy para esta conta (socks5://, http://, https://). Vazio para desvincular:','ru':'Привязать прокси для этого аккаунта (socks5://, http://, https://). Пусто — отвязать:','ar':'اربط بروكسي لهذا الحساب (socks5://, http://, https://). اتركه فارغًا لإلغاء الربط:'},
+  'Key not found': {'zh-CN':'找不到密钥','zh-TW':'找不到金鑰','ja':'キーが見つかりません','ko':'키를 찾을 수 없습니다','es':'Clave no encontrada','fr':'Clé introuvable','de':'Schlüssel nicht gefunden','pt-BR':'Chave não encontrada','ru':'Ключ не найден','ar':'لم يتم العثور على المفتاح'},
+  'Current key': {'zh-CN':'当前密钥','zh-TW':'目前金鑰','ja':'現在のキー','ko':'현재 키','es':'Clave actual','fr':'Clé actuelle','de':'Aktueller Schlüssel','pt-BR':'Chave atual','ru':'Текущий ключ','ar':'المفتاح الحالي'},
+  'Full key unavailable': {'zh-CN':'完整密钥不可用','zh-TW':'完整金鑰不可用','ja':'完全なキーは利用できません','ko':'전체 키를 사용할 수 없습니다','es':'Clave completa no disponible','fr':'Clé complète indisponible','de':'Vollständiger Schlüssel nicht verfügbar','pt-BR':'Chave completa indisponível','ru':'Полный ключ недоступен','ar':'المفتاح الكامل غير متوفر'},
+  'Authorization succeeded': {'zh-CN':'授权成功','zh-TW':'授權成功','ja':'承認に成功しました','ko':'인증 성공','es':'Autorización correcta','fr':'Autorisation réussie','de':'Autorisierung erfolgreich','pt-BR':'Autorização bem-sucedida','ru':'Авторизация успешна','ar':'تم التفويض بنجاح'},
+  'Authorization failed or expired': {'zh-CN':'授权失败或已过期','zh-TW':'授權失敗或已過期','ja':'承認に失敗したか期限切れです','ko':'인증 실패 또는 만료됨','es':'Autorización fallida o expirada','fr':'Autorisation échouée ou expirée','de':'Autorisierung fehlgeschlagen oder abgelaufen','pt-BR':'Autorização falhou ou expirou','ru':'Авторизация не удалась или истекла','ar':'فشل التفويض أو انتهت صلاحيته'},
+  'Authorization timed out; please start again.': {'zh-CN':'授权超时，请重新开始授权。','zh-TW':'授權逾時，請重新開始授權。','ja':'承認がタイムアウトしました。再度お試しください。','ko':'인증 시간이 초과되었습니다. 다시 시도하세요.','es':'La autorización expiró; inténtelo de nuevo.','fr':'L\'autorisation a expiré ; veuillez réessayer.','de':'Die Autorisierung ist abgelaufen; bitte erneut versuchen.','pt-BR':'A autorização expirou; tente novamente.','ru':'Время авторизации истекло; попробуйте снова.','ar':'انتهت مهلة التفويض؛ يرجى المحاولة مرة أخرى.'},
+  'The authorization window was closed before completion.': {'zh-CN':'授权窗口在完成前已关闭。','zh-TW':'授權視窗在完成前已關閉。','ja':'承認ウィンドウが完了前に閉じられました。','ko':'인증 창이 완료 전에 닫혔습니다.','es':'La ventana de autorización se cerró antes de completarse.','fr':'La fenêtre d\'autorisation a été fermée avant la fin.','de':'Das Autorisierungsfenster wurde vor Abschluss geschlossen.','pt-BR':'A janela de autorização foi fechada antes da conclusão.','ru':'Окно авторизации было закрыто до завершения.','ar':'أُغلقت نافذة التفويض قبل اكتمالها.'},
+  'The account has been added to the pool.': {'zh-CN':'账号已加入账号池。','zh-TW':'帳號已加入帳號池。','ja':'アカウントがプールに追加されました。','ko':'계정이 풀에 추가되었습니다.','es':'La cuenta se ha añadido al grupo.','fr':'Le compte a été ajouté au pool.','de':'Das Konto wurde zum Pool hinzugefügt.','pt-BR':'A conta foi adicionada ao pool.','ru':'Аккаунт добавлен в пул.','ar':'تمت إضافة الحساب إلى المجموعة.'},
+  'Popups blocked by the browser': {'zh-CN':'弹出窗口被浏览器拦截','zh-TW':'彈出視窗被瀏覽器攔截','ja':'ポップアップがブラウザにブロックされました','ko':'팝업이 브라우저에 의해 차단되었습니다','es':'Ventanas emergentes bloqueadas por el navegador','fr':'Popups bloquées par le navigateur','de':'Popups vom Browser blockiert','pt-BR':'Pop-ups bloqueados pelo navegador','ru':'Всплывающие окна заблокированы браузером','ar':'حظر المتصفح النوافذ المنبثقة'},
+  'Please allow popups for this site, then click "Start authorization" again.': {'zh-CN':'请允许此网站的弹出窗口，然后重新点击"开始授权"。','zh-TW':'請允許此網站的彈出視窗，然後重新點擊「開始授權」。','ja':'このサイトのポップアップを許可してから、「承認を開始」を再度クリックしてください。','ko':'이 사이트의 팝업을 허용한 후 "인증 시작"을 다시 클릭하세요.','es':'Permita las ventanas emergentes de este sitio y haga clic de nuevo en "Iniciar autorización".','fr':'Autorisez les popups pour ce site, puis cliquez à nouveau sur « Démarrer l\'autorisation ».','de':'Erlauben Sie Popups für diese Website und klicken Sie dann erneut auf „Autorisierung starten".','pt-BR':'Permita pop-ups para este site e clique novamente em "Iniciar autorização".','ru':'Разрешите всплывающие окна для этого сайта и нажмите «Начать авторизацию» ещё раз.','ar':'اسمح بالنوافذ المنبثقة لهذا الموقع ثم انقر "بدء التفويض" مرة أخرى.'},
+  'Authorization page opened in a new window': {'zh-CN':'授权页面已在新窗口打开','zh-TW':'授權頁面已在新視窗開啟','ja':'承認ページが新しいウィンドウで開きました','ko':'인증 페이지가 새 창에서 열렸습니다','es':'La página de autorización se abrió en una nueva ventana','fr':'La page d\'autorisation s\'est ouverte dans une nouvelle fenêtre','de':'Die Autorisierungsseite wurde in einem neuen Fenster geöffnet','pt-BR':'A página de autorização foi aberta em uma nova janela','ru':'Страница авторизации открыта в новом окне','ar':'تم فتح صفحة التفويض في نافذة جديدة'},
+  'Complete sign-in in the popup window. After signing in, the popup will show a blank page or an error — this is normal. Copy the': {'zh-CN':'请在弹出窗口中完成登录。登录后弹出页会显示空白或错误——这是正常的。复制弹出页地址栏的','zh-TW':'請在彈出視窗中完成登入。登入後彈出頁會顯示空白或錯誤——這是正常的。複製彈出頁網址列的','ja':'ポップアップウィンドウでログインを完了してください。ログイン後、ポップアップに空白ページやエラーが表示されるのは正常です。ポップアップのアドレスバーの','ko':'팝업 창에서 로그인을 완료하세요. 로그인 후 팝업 페이지에 빈 화면이나 오류가 표시되는 것은 정상입니다. 팝업 주소창의','es':'Complete el inicio de sesión en la ventana emergente. Después de iniciar sesión, la ventana mostrará una página en blanco o un error; es normal. Copie de la barra de direcciones del emergente','fr':'Terminez la connexion dans la fenêtre contextuelle. Après connexion, la fenêtre affichera une page blanche ou une erreur — c\'est normal. Copiez depuis la barre d\'adresse de la fenêtre','de':'Schließen Sie die Anmeldung im Popup-Fenster ab. Nach der Anmeldung zeigt das Popup eine leere Seite oder einen Fehler an – das ist normal. Kopieren Sie aus der Adressleiste des Popups','pt-BR':'Conclua o login na janela pop-up. Após o login, o pop-up mostrará uma página em branco ou um erro — isso é normal. Copie da barra de endereço do pop-up','ru':'Завершите вход во всплывающем окне. После входа окно покажет пустую страницу или ошибку — это нормально. Скопируйте из адресной строки окна','ar':'أكمل تسجيل الدخول في النافذة المنبثقة. بعد تسجيل الدخول، ستعرض النافذة صفحة فارغة أو خطأً — هذا طبيعي. انسخ من شريط عنوان النافذة'},
+  'full URL': {'zh-CN':'完整网址','zh-TW':'完整網址','ja':'完全な URL','ko':'전체 URL','es':'la URL completa','fr':'l\'URL complète','de':'die vollständige URL','pt-BR':'a URL completa','ru':'полный URL','ar':'عنوان URL الكامل'},
+  'from the address bar and paste it into the "Callback URL" input below.': {'zh-CN':'，粘贴到下方"回调地址"输入框。','zh-TW':'，貼到下方「回呼位址」輸入框。','ja':'を、下の「コールバック URL」入力欄に貼り付けてください。','ko':'를 아래 "콜백 URL" 입력란에 붙여넣으세요.','es':' y péguela en el campo "URL de devolución" de abajo.','fr':' et collez-la dans le champ « URL de rappel » ci-dessous.','de':' und fügen Sie sie unten in das Feld „Callback-URL" ein.','pt-BR':' e cole no campo "URL de retorno" abaixo.','ru':' и вставьте её в поле «Callback URL» ниже.','ar':' والصقه في حقل "عنوان URL لإعادة التوجيه" أدناه.'},
+  'Paste the full callback URL from the popup address bar…': {'zh-CN':'粘贴弹出页地址栏中的完整回调地址…','zh-TW':'貼上彈出頁網址列中的完整回呼位址…','ja':'ポップアップのアドレスバーから完全なコールバック URL を貼り付け…','ko':'팝업 주소창의 전체 콜백 URL을 붙여넣으세요…','es':'Pegue la URL de devolución completa de la barra de direcciones del emergente…','fr':'Collez l\'URL de rappel complète depuis la barre d\'adresse de la fenêtre contextuelle…','de':'Vollständige Callback-URL aus der Adressleiste des Popups einfügen…','pt-BR':'Cole a URL de retorno completa da barra de endereços do pop-up…','ru':'Вставьте полный URL обратного вызова из адресной строки всплывающего окна…','ar':'الصق عنوان URL الكامل لإعادة التوجيه من شريط عنوان النافذة المنبثقة…'},
+  'Please paste the callback URL': {'zh-CN':'请粘贴回调地址','zh-TW':'請貼上回呼位址','ja':'コールバック URL を貼り付けてください','ko':'콜백 URL을 붙여넣어 주세요','es':'Pegue la URL de devolución','fr':'Collez l\'URL de rappel','de':'Callback-URL einfügen','pt-BR':'Cole a URL de retorno','ru':'Вставьте URL обратного вызова','ar':'الصق عنوان URL لإعادة التوجيه'},
+  'Images remaining': {'zh-CN':'可生成图片','zh-TW':'可生成圖片','ja':'生成可能な画像','ko':'생성 가능 이미지','es':'Imágenes restantes','fr':'Images restantes','de':'Verbleibende Bilder','pt-BR':'Imagens restantes','ru':'Осталось изображений','ar':'الصور المتبقية'},
+  'Chats remaining': {'zh-CN':'可对话次数','zh-TW':'可對話次數','ja':'可能な対話回数','ko':'가능한 대화 횟수','es':'Chats restantes','fr':'Discussions restantes','de':'Verbleibende Chats','pt-BR':'Chats restantes','ru':'Осталось чатов','ar':'المحادثات المتبقية'},
+  'Claude queries remaining': {'zh-CN':'Claude 剩余次数','zh-TW':'Claude 剩餘次數','ja':'Claude 残り回数','ko':'Claude 남은 횟수','es':'Consultas de Claude restantes','fr':'Requêtes Claude restantes','de':'Verbleibende Claude-Anfragen','pt-BR':'Consultas Claude restantes','ru':'Осталось запросов Claude','ar':'استعلامات Claude المتبقية'},
+  'Remaining': {'zh-CN':'剩余','zh-TW':'剩餘','ja':'残り','ko':'남은 횟수','es':'Restante','fr':'Restant','de':'Verbleibend','pt-BR':'Restante','ru':'Осталось','ar':'المتبقي'},
+  'No quota data yet; waiting for the next request': {'zh-CN':'暂无剩余额度数据，等待下一次请求回写','zh-TW':'暫無剩餘額度資料，等待下一次要求回寫','ja':'残量データはまだありません。次のリクエスト後に表示されます','ko':'아직 할당량 데이터가 없습니다. 다음 요청 후 표시됩니다','es':'Aún no hay datos de cuota; aparecerán tras la siguiente solicitud','fr':'Pas encore de données de quota ; elles apparaîtront après la prochaine requête','de':'Noch keine Kontingentdaten; erscheinen nach der nächsten Anfrage','pt-BR':'Ainda não há dados de cota; aparecerão após a próxima solicitação','ru':'Данных о квоте пока нет; появятся после следующего запроса','ar':'لا توجد بيانات حصة بعد؛ ستظهر بعد الطلب التالي'},
+  'Quota data will appear after the next successful request': {'zh-CN':'额度数据等待下一次成功请求后展示','zh-TW':'額度資料等待下一次成功要求後展示','ja':'残量データは次の成功したリクエスト後に表示されます','ko':'할당량 데이터는 다음 요청 성공 후 표시됩니다','es':'Los datos de cuota se mostrarán tras la siguiente solicitud correcta','fr':'Les données de quota apparaîtront après la prochaine requête réussie','de':'Kontingentdaten werden nach der nächsten erfolgreichen Anfrage angezeigt','pt-BR':'Os dados de cota serão exibidos após a próxima solicitação bem-sucedida','ru':'Данные квоты появятся после следующего успешного запроса','ar':'ستظهر بيانات الحصة بعد الطلب الناجح التالي'},
+  'Conversation quota data not yet available (updates after next request)': {'zh-CN':'对话水位暂无数据（等待下一次请求回写）','zh-TW':'對話水位暫無資料（等待下一次要求回寫）','ja':'対話使用量データはまだありません（次のリクエスト後に更新）','ko':'대화 사용량 데이터가 아직 없습니다 (다음 요청 후 갱신)','es':'Datos de uso de conversación aún no disponibles (se actualizan tras la siguiente solicitud)','fr':'Données d\'usage de conversation pas encore disponibles (mises à jour après la prochaine requête)','de':'Nutzungsdaten der Unterhaltung noch nicht verfügbar (Aktualisierung nach der nächsten Anfrage)','pt-BR':'Dados de uso da conversa ainda não disponíveis (atualizados após a próxima solicitação)','ru':'Данные об использовании разговора пока недоступны (обновятся после следующего запроса)','ar':'بيانات استخدام المحادثة غير متوفرة بعد (تُحدَّث بعد الطلب التالي)'},
+  'Rate limit reason': {'zh-CN':'限流原因','zh-TW':'限流原因','ja':'制限の理由','ko':'제한 사유','es':'Motivo del límite','fr':'Raison de la limite','de':'Begrenzungsgrund','pt-BR':'Motivo do limite','ru':'Причина ограничения','ar':'سبب الحد'},
+  'Access denied': {'zh-CN':'已拒绝访问','zh-TW':'已拒絕存取','ja':'アクセスが拒否されました','ko':'액세스 거부됨','es':'Acceso denegado','fr':'Accès refusé','de':'Zugriff verweigert','pt-BR':'Acesso negado','ru':'Доступ запрещён','ar':'تم رفض الوصول'},
+  'Conversation': {'zh-CN':'对话','zh-TW':'對話','ja':'会話','ko':'대화','es':'Conversación','fr':'Conversation','de':'Unterhaltung','pt-BR':'Conversa','ru':'Разговор','ar':'محادثة'},
+  'Concurrent': {'zh-CN':'并发','zh-TW':'並發','ja':'同時実行','ko':'동시 실행','es':'Concurrente','fr':'Concurrent','de':'Parallel','pt-BR':'Concorrente','ru':'Параллельно','ar':'متزامن'},
+  'concurrent active': {'zh-CN':'并发中','zh-TW':'並發中','ja':'同時実行中','ko':'동시 실행 중','es':'en ejecución concurrente','fr':'en cours concurrent','de':'parallele aktiv','pt-BR':'em execução concorrente','ru':'параллельно активно','ar':'قيد التنفيذ المتزامن'},
+  'min until recovery': {'zh-CN':'分钟后恢复','zh-TW':'分鐘後恢復','ja':'分後に回復','ko':'분 후 복구','es':'min para recuperarse','fr':'min avant récupération','de':'Min. bis Wiederherstellung','pt-BR':'min até a recuperação','ru':'мин до восстановления','ar':'دقيقة حتى الاستعادة'},
+  'No accounts cooling down; scheduling available': {'zh-CN':'无冷却账号 · 调度可用','zh-TW':'無冷卻帳號 · 調度可用','ja':'クールダウン中のアカウントなし · スケジュール可能','ko':'쿨다운 중인 계정 없음 · 스케줄링 가능','es':'Sin cuentas en enfriamiento; programación disponible','fr':'Aucun compte en refroidissement ; planification disponible','de':'Keine Konten im Abkühlzustand; Planung verfügbar','pt-BR':'Sem contas em resfriamento; agendamento disponível','ru':'Нет аккаунтов в ожидании; планирование доступно','ar':'لا توجد حسابات في التهدئة؛ الجدولة متاحة'},
+  'Global circuit breaker open': {'zh-CN':'全局熔断开启','zh-TW':'全域熔斷開啟','ja':'グローバルサーキットブレーカー作動中','ko':'글로벌 서킷 브레이커 작동','es':'Interruptor global activado','fr':'Disjoncteur global ouvert','de':'Globaler Schutzschalter offen','pt-BR':'Disjuntor global aberto','ru':'Глобальный предохранитель сработал','ar':'قاطع الدائرة العام مفتوح'},
+  'quota synced': {'zh-CN':'已同步额度','zh-TW':'已同步額度','ja':'同期済み残量','ko':'할당량 동기화됨','es':'cuotas sincronizadas','fr':'quotas synchronisés','de':'Kontingente synchronisiert','pt-BR':'cotas sincronizadas','ru':'квот синхронизировано','ar':'حصص مُزامنة'},
+  'schedulable': {'zh-CN':'可调度','zh-TW':'可調度','ja':'スケジュール可能','ko':'스케줄 가능','es':'programables','fr':'planifiables','de':'planbar','pt-BR':'agendáveis','ru':'доступно для планирования','ar':'قابلة للجدولة'},
+  'rate limited': {'zh-CN':'限流','zh-TW':'限流','ja':'制限中','ko':'제한됨','es':'limitadas','fr':'limitées','de':'begrenzt','pt-BR':'limitadas','ru':'ограничены','ar':'محدودة'},
+  'circuit open': {'zh-CN':'熔断','zh-TW':'熔斷','ja':'サーキットブレーク','ko':'서킷 오픈','es':'interruptor abierto','fr':'disjoncteur ouvert','de':'Schutzschalter offen','pt-BR':'disjuntor aberto','ru':'предохранитель сработал','ar':'قاطع مفتوح'},
+  'All accounts cooling down; wait for recovery or add accounts': {'zh-CN':'全部账号冷却中，等待恢复或增加账号','zh-TW':'全部帳號冷卻中，等待恢復或增加帳號','ja':'すべてのアカウントがクールダウン中です。回復を待つか、アカウントを追加してください','ko':'모든 계정이 쿨다운 중입니다. 복구를 기다리거나 계정을 추가하세요','es':'Todas las cuentas en enfriamiento; espere la recuperación o añada cuentas','fr':'Tous les comptes sont en refroidissement ; attendez la récupération ou ajoutez des comptes','de':'Alle Konten im Abkühlzustand; warten Sie auf die Wiederherstellung oder fügen Sie Konten hinzu','pt-BR':'Todas as contas em resfriamento; aguarde a recuperação ou adicione contas','ru':'Все аккаунты в ожидании; дождитесь восстановления или добавьте аккаунты','ar':'جميع الحسابات في التهدئة؛ انتظر الاستعادة أو أضف حسابات'},
+  'Accounts with zero image quota can still serve text-only requests': {'zh-CN':'生图为 0 的账号仍可接纯文本请求','zh-TW':'生圖為 0 的帳號仍可接純文字要求','ja':'画像生成残量が 0 のアカウントもテキスト専用リクエストは処理できます','ko':'이미지 생성 한도가 0인 계정도 텍스트 전용 요청은 처리할 수 있습니다','es':'Las cuentas sin cuota de imágenes aún pueden atender solicitudes de solo texto','fr':'Les comptes sans quota d\'images peuvent encore traiter les requêtes texte uniquement','de':'Konten ohne Bildkontingent können weiterhin reine Textanfragen bedienen','pt-BR':'Contas sem cota de imagens ainda podem atender solicitações apenas de texto','ru':'Аккаунты с нулевой квотой изображений всё равно обрабатывают текстовые запросы','ar':'الحسابات ذات حصة صور صفرية لا تزال قادرة على معالجة الطلبات النصية فقط'},
+  'Chat': {'zh-CN':'对话','zh-TW':'對話','ja':'対話','ko':'대화','es':'Chat','fr':'Chat','de':'Chat','pt-BR':'Chat','ru':'Чат','ar':'دردشة'},
+  'Image gen': {'zh-CN':'生图','zh-TW':'生圖','ja':'画像生成','ko':'이미지 생성','es':'Gen. de imágenes','fr':'Gén. d\'images','de':'Bilderzeugung','pt-BR':'Ger. de imagens','ru':'Генерация изображений','ar':'توليد الصور'},
+  'Visual creation': {'zh-CN':'Visual创作','zh-TW':'Visual創作','ja':'Visual作成','ko':'비주얼 생성','es':'Creación visual','fr':'Création visuelle','de':'Visuelle Erstellung','pt-BR':'Criação visual','ru':'Визуальное творчество','ar':'الإبداع البصري'},
+  'Claude daily': {'zh-CN':'Claude 日限','zh-TW':'Claude 日限','ja':'Claude 日次','ko':'Claude 일일','es':'Claude diario','fr':'Claude quotidien','de':'Claude täglich','pt-BR':'Claude diário','ru':'Claude в день','ar':'Claude يومي'},
+  'Claude daily C1': {'zh-CN':'Claude 日C1','zh-TW':'Claude 日C1','ja':'Claude 日次C1','ko':'Claude 일일 C1','es':'Claude diario C1','fr':'Claude quotidien C1','de':'Claude täglich C1','pt-BR':'Claude diário C1','ru':'Claude в день C1','ar':'Claude يومي C1'},
+  'Claude daily C2': {'zh-CN':'Claude 日C2','zh-TW':'Claude 日C2','ja':'Claude 日次C2','ko':'Claude 일일 C2','es':'Claude diario C2','fr':'Claude quotidien C2','de':'Claude täglich C2','pt-BR':'Claude diário C2','ru':'Claude в день C2','ar':'Claude يومي C2'},
+  'Claude daily Word': {'zh-CN':'Claude 日Word','zh-TW':'Claude 日Word','ja':'Claude 日次Word','ko':'Claude 일일 Word','es':'Claude diario Word','fr':'Claude quotidien Word','de':'Claude täglich Word','pt-BR':'Claude diário Word','ru':'Claude в день Word','ar':'Claude يومي Word'},
+  'Claude hourly Dev': {'zh-CN':'Claude 小时Dev','zh-TW':'Claude 小時Dev','ja':'Claude 時間Dev','ko':'Claude 시간당 Dev','es':'Claude por hora Dev','fr':'Claude par heure Dev','de':'Claude stündlich Dev','pt-BR':'Claude por hora Dev','ru':'Claude в час Dev','ar':'Claude بالساعة Dev'},
+  'Claude weekly Word': {'zh-CN':'Claude 周Word','zh-TW':'Claude 週Word','ja':'Claude 週次Word','ko':'Claude 주간 Word','es':'Claude semanal Word','fr':'Claude hebdomadaire Word','de':'Claude wöchentlich Word','pt-BR':'Claude semanal Word','ru':'Claude в неделю Word','ar':'Claude أسبوعي Word'},
+  'Artifacts': {'zh-CN':'产物','zh-TW':'產物','ja':'アーティファクト','ko':'아티팩트','es':'Artefactos','fr':'Artefacts','de':'Artefakte','pt-BR':'Artefatos','ru':'Артефакты','ar':'مخرجات'},
+  'File reference': {'zh-CN':'文件引用','zh-TW':'檔案引用','ja':'ファイル参照','ko':'파일 참조','es':'Referencia de archivos','fr':'Référence de fichiers','de':'Dateiverweis','pt-BR':'Referência de arquivos','ru':'Ссылки на файлы','ar':'مرجع الملفات'},
+  'Code interpreter': {'zh-CN':'代码解释','zh-TW':'程式碼解釋','ja':'コードインタープリタ','ko':'코드 인터프리터','es':'Intérprete de código','fr':'Interpréteur de code','de':'Code-Interpreter','pt-BR':'Intérprete de código','ru':'Интерпретатор кода','ar':'مفسر الشيفرة'},
+  'Image analysis': {'zh-CN':'图像分析','zh-TW':'圖像分析','ja':'画像分析','ko':'이미지 분석','es':'Análisis de imágenes','fr':'Analyse d\'images','de':'Bildanalyse','pt-BR':'Análise de imagens','ru':'Анализ изображений','ar':'تحليل الصور'},
+  'Deep research': {'zh-CN':'深度研究','zh-TW':'深度研究','ja':'ディープリサーチ','ko':'딥 리서치','es':'Investigación profunda','fr':'Recherche approfondie','de':'Tiefenrecherche','pt-BR':'Pesquisa profunda','ru':'Глубокое исследование','ar':'بحث معمق'},
+  'Tuning': {'zh-CN':'调优','zh-TW':'調校','ja':'チューニング','ko':'튜닝','es':'Ajuste','fr':'Réglage','de':'Tuning','pt-BR':'Ajuste','ru':'Настройка','ar':'ضبط'},
+  'Personal data': {'zh-CN':'个人数据','zh-TW':'個人資料','ja':'個人データ','ko':'개인 데이터','es':'Datos personales','fr':'Données personnelles','de':'Persönliche Daten','pt-BR':'Dados pessoais','ru':'Личные данные','ar':'بيانات شخصية'},
+  'Tenant data': {'zh-CN':'租户数据','zh-TW':'租戶資料','ja':'テナントデータ','ko':'테넌트 데이터','es':'Datos del inquilino','fr':'Données du locataire','de':'Mandantendaten','pt-BR':'Dados do locatário','ru':'Данные арендатора','ar':'بيانات المستأجر'},
+  'Reasoning': {'zh-CN':'推理','zh-TW':'推理','ja':'推論','ko':'추론','es':'Razonamiento','fr':'Raisonnement','de':'Denken','pt-BR':'Raciocínio','ru':'Рассуждение','ar':'استدلال'},
+  'Cost': {'zh-CN':'成本','zh-TW':'成本','ja':'コスト','ko':'비용','es':'Costo','fr':'Coût','de':'Kosten','pt-BR':'Custo','ru':'Стоимость','ar':'التكلفة'},
+  'This key authenticates requests to the OpenAI / Anthropic compatible API. The full key is shown only once — copy and save it immediately. After creation, click "Use key" in the key list to see client configuration examples.': {'zh-CN':'此密钥用于认证 OpenAI / Anthropic 兼容接口的请求。完整密钥仅显示一次——请立即复制保存。创建后可在密钥列表中点击"使用密钥"查看客户端配置示例。','zh-TW':'此金鑰用於認證 OpenAI / Anthropic 相容介面的要求。完整金鑰僅顯示一次——請立即複製儲存。建立後可在金鑰列表中點擊「使用金鑰」查看用戶端設定範例。','ja':'このキーは OpenAI / Anthropic 互換 API へのリクエストを認証します。完全なキーは一度しか表示されないため、すぐにコピーして保存してください。作成後、キー一覧の「キーを使用」でクライアント設定例を確認できます。','ko':'이 키는 OpenAI / Anthropic 호환 API 요청을 인증하는 데 사용됩니다. 전체 키는 한 번만 표시되니 즉시 복사하여 보관하세요. 생성 후 키 목록에서 "키 사용"을 클릭하면 클라이언트 설정 예시를 볼 수 있습니다.','es':'Esta clave autentica las solicitudes a la API compatible con OpenAI / Anthropic. La clave completa se muestra solo una vez: cópiela y guárdela de inmediato. Tras crearla, haga clic en "Usar clave" en la lista para ver ejemplos de configuración.','fr':'Cette clé authentifie les requêtes vers l\'API compatible OpenAI / Anthropic. La clé complète n\'est affichée qu\'une seule fois — copiez-la et enregistrez-la immédiatement. Après création, cliquez sur « Utiliser la clé » dans la liste pour voir des exemples de configuration.','de':'Dieser Schlüssel authentifiziert Anfragen an die OpenAI-/Anthropic-kompatible API. Der vollständige Schlüssel wird nur einmal angezeigt — kopieren und sichern Sie ihn sofort. Nach der Erstellung klicken Sie in der Liste auf „Schlüssel verwenden", um Konfigurationsbeispiele zu sehen.','pt-BR':'Esta chave autentica solicitações para a API compatível com OpenAI / Anthropic. A chave completa é mostrada apenas uma vez — copie e salve imediatamente. Após criar, clique em "Usar chave" na lista para ver exemplos de configuração.','ru':'Этот ключ аутентифицирует запросы к API, совместимому с OpenAI / Anthropic. Полный ключ показывается только один раз — сразу скопируйте и сохраните его. После создания нажмите «Использовать ключ» в списке, чтобы увидеть примеры настройки.','ar':'يُصادق هذا المفتاح على الطلبات الموجهة إلى واجهة API المتوافقة مع OpenAI / Anthropic. يظهر المفتاح الكامل مرة واحدة فقط — انسخه واحفظه فورًا. بعد الإنشاء، انقر "استخدام المفتاح" في القائمة لرؤية أمثلة التهيئة.'},
+  'A label to identify this key (e.g. "my-laptop", "claude-code")': {'zh-CN':'用于标识此密钥的标签（如"my-laptop"、"claude-code"）','zh-TW':'用於標識此金鑰的標籤（如「my-laptop」、「claude-code」）','ja':'このキーを識別するラベル（例: "my-laptop"、"claude-code"）','ko':'이 키를 식별하는 레이블 (예: "my-laptop", "claude-code")','es':'Una etiqueta para identificar esta clave (p. ej. "my-laptop", "claude-code")','fr':'Une étiquette pour identifier cette clé (p. ex. « my-laptop », « claude-code »)','de':'Ein Label zur Identifikation dieses Schlüssels (z. B. „my-laptop", „claude-code")','pt-BR':'Um rótulo para identificar esta chave (ex.: "my-laptop", "claude-code")','ru':'Метка для идентификации этого ключа (например, «my-laptop», «claude-code»)','ar':'تسمية لتعريف هذا المفتاح (مثل "my-laptop"، "claude-code")'},
+  'upstream request failed': {'zh-CN':'上游请求失败','zh-TW':'上游要求失敗','ja':'アップストリームリクエストに失敗しました','ko':'업스트림 요청 실패','es':'Falló la solicitud ascendente','fr':'Échec de la requête amont','de':'Upstream-Anfrage fehlgeschlagen','pt-BR':'Falha na solicitação upstream','ru':'Ошибка запроса к апстриму','ar':'فشل طلب المنبع'},
+  'Enter administrator password (default: admin123)': {'zh-CN':'请输入管理员密码（默认：admin123）','zh-TW':'請輸入管理員密碼（預設：admin123）','ja':'管理者パスワードを入力してください（デフォルト: admin123）','ko':'관리자 비밀번호를 입력하세요 (기본: admin123)','es':'Introduzca la contraseña de administrador (predeterminada: admin123)','fr':'Saisissez le mot de passe administrateur (par défaut : admin123)','de':'Administrator-Passwort eingeben (Standard: admin123)','pt-BR':'Digite a senha de administrador (padrão: admin123)','ru':'Введите пароль администратора (по умолчанию: admin123)','ar':'أدخل كلمة مرور المسؤول (الافتراضية: admin123)'},
+  'Default password is': {'zh-CN':'默认密码为','zh-TW':'預設密碼為','ja':'デフォルトパスワードは','ko':'기본 비밀번호는','es':'La contraseña predeterminada es','fr':'Le mot de passe par défaut est','de':'Das Standardpasswort ist','pt-BR':'A senha padrão é','ru':'Пароль по умолчанию —','ar':'كلمة المرور الافتراضية هي'},
+  '; must be changed after first login.': {'zh-CN':'，首次登录后需修改密码。','zh-TW':'，首次登入後需修改密碼。','ja':'、初回ログイン後に変更してください。','ko':'이며, 첫 로그인 후 변경해야 합니다.','es':'; debe cambiarse tras el primer inicio de sesión.','fr':' ; à modifier après la première connexion.','de':' und muss nach der ersten Anmeldung geändert werden.','pt-BR':'; deve ser alterada após o primeiro login.','ru':'; его необходимо сменить после первого входа.','ar':'، ويجب تغييرها بعد تسجيل الدخول الأول.'},
+  'Click "Start Authorization" below': {'zh-CN':'点击下方"开始授权"','zh-TW':'點擊下方「開始授權」','ja':'下の「認証を開始」をクリック','ko':'아래 "인증 시작"을 클릭하세요','es':'Haga clic en "Iniciar autorización" a continuación','fr':'Cliquez sur « Démarrer l\'autorisation » ci-dessous','de':'Klicken Sie unten auf „Autorisierung starten"','pt-BR':'Clique em "Iniciar autorização" abaixo','ru':'Нажмите «Начать авторизацию» ниже','ar':'انقر على "بدء التفويض" أدناه'},
+  'A popup will open the Microsoft sign-in page; return to this page after signing in.': {'zh-CN':'弹出窗口将打开 Microsoft 登录页面，完成登录后返回此页面。','zh-TW':'彈出視窗將開啟 Microsoft 登入頁面，完成登入後返回此頁面。','ja':'ポップアップで Microsoft サインインページが開きます。サインイン後、このページに戻ってください。','ko':'팝업 창에서 Microsoft 로그인 페이지가 열립니다. 로그인 후 이 페이지로 돌아오세요.','es':'Se abrirá una ventana emergente con la página de inicio de sesión de Microsoft; vuelva a esta página después de iniciar sesión.','fr':'Une fenêtre contextuelle ouvrira la page de connexion Microsoft ; revenez sur cette page après vous être connecté.','de':'Ein Popup öffnet die Microsoft-Anmeldeseite; kehren Sie nach der Anmeldung zu dieser Seite zurück.','pt-BR':'Um pop-up abrirá a página de entrada da Microsoft; volte a esta página depois de entrar.','ru':'Всплывающее окно откроет страницу входа Microsoft; вернитесь на эту страницу после входа.','ar':'ستفتح نافذة منبثقة صفحة تسجيل الدخول إلى Microsoft؛ عد إلى هذه الصفحة بعد تسجيل الدخول.'},
+  'You must manually paste the callback URL to complete authorization': {'zh-CN':'必须手动粘贴回调地址以完成授权','zh-TW':'必須手動貼上回呼位址以完成授權','ja':'認証を完了するにはコールバック URL を手動で貼り付ける必要があります','ko':'인증을 완료하려면 콜백 URL을 수동으로 붙여넣어야 합니다','es':'Debe pegar manualmente la URL de devolución para completar la autorización','fr':'Vous devez coller manuellement l\'URL de rappel pour terminer l\'autorisation','de':'Sie müssen die Callback-URL manuell einfügen, um die Autorisierung abzuschließen','pt-BR':'Você deve colar manualmente a URL de retorno para concluir a autorização','ru':'Чтобы завершить авторизацию, вставьте URL обратного вызова вручную','ar':'يجب لصق عنوان URL لإعادة الاستدعاء يدويًا لإكمال التفويض'},
+  'Paste the full callback URL, e.g. http://localhost:4141/api/auth/callback?code=M.C5...&state=abc123': {'zh-CN':'粘贴完整回调地址，例如 http://localhost:4141/api/auth/callback?code=M.C5...&state=abc123','zh-TW':'貼上完整回呼位址，例如 http://localhost:4141/api/auth/callback?code=M.C5...&state=abc123','ja':'完全なコールバック URL を貼り付け（例: http://localhost:4141/api/auth/callback?code=M.C5...&state=abc123）','ko':'전체 콜백 URL을 붙여넣으세요 (예: http://localhost:4141/api/auth/callback?code=M.C5...&state=abc123)','es':'Pegue la URL de devolución completa, p. ej. http://localhost:4141/api/auth/callback?code=M.C5...&state=abc123','fr':'Collez l\'URL de rappel complète, ex. http://localhost:4141/api/auth/callback?code=M.C5...&state=abc123','de':'Vollständige Callback-URL einfügen, z. B. http://localhost:4141/api/auth/callback?code=M.C5...&state=abc123','pt-BR':'Cole a URL de retorno completa, ex.: http://localhost:4141/api/auth/callback?code=M.C5...&state=abc123','ru':'Вставьте полный URL обратного вызова, напр. http://localhost:4141/api/auth/callback?code=M.C5...&state=abc123','ar':'الصق عنوان URL الكامل لإعادة الاستدعاء، مثال: http://localhost:4141/api/auth/callback?code=M.C5...&state=abc123'},
+  'M365 cloud client not configured. Please add an M365 account first via PKCE authorization.': {'zh-CN':'尚未配置 M365 云端客户端。请先通过 PKCE 授权添加 M365 账号。','zh-TW':'尚未設定 M365 雲端用戶端。請先透過 PKCE 授權新增 M365 帳號。','ja':'M365 クラウドクライアントが構成されていません。先に PKCE 認証で M365 アカウントを追加してください。','ko':'M365 클라우드 클라이언트가 구성되지 않았습니다. 먼저 PKCE 인증으로 M365 계정을 추가하세요.','es':'El cliente en la nube de M365 no está configurado. Añada primero una cuenta M365 mediante autorización PKCE.','fr':'Le client cloud M365 n\'est pas configuré. Ajoutez d\'abord un compte M365 via l\'autorisation PKCE.','de':'Der M365-Cloud-Client ist nicht konfiguriert. Bitte fügen Sie zuerst ein M365-Konto über die PKCE-Autorisierung hinzu.','pt-BR':'O cliente de nuvem M365 não está configurado. Adicione primeiro uma conta M365 via autorização PKCE.','ru':'Клиент M365 Cloud не настроен. Сначала добавьте аккаунт M365 через авторизацию PKCE.','ar':'لم يتم تكوين عميل M365 السحابي. يرجى إضافة حساب M365 أولاً عبر تفويض PKCE.'},
+  'administrator login required': {'zh-CN':'需要管理员登录','zh-TW':'需要管理員登入','ja':'管理者ログインが必要です','ko':'관리자 로그인이 필요합니다','es':'Se requiere inicio de sesión de administrador','fr':'Connexion administrateur requise','de':'Administrator-Anmeldung erforderlich','pt-BR':'Login de administrador necessário','ru':'Требуется вход администратора','ar':'مطلوب تسجيل دخول المسؤول'},
+  'administrator password must be changed before using the console': {'zh-CN':'使用控制台前必须修改管理员密码','zh-TW':'使用控制台前必須修改管理員密碼','ja':'コンソールを使用する前に管理者パスワードを変更してください','ko':'콘솔을 사용하기 전에 관리자 비밀번호를 변경해야 합니다','es':'Debe cambiar la contraseña de administrador antes de usar la consola','fr':'Le mot de passe administrateur doit être modifié avant d\'utiliser la console','de':'Das Administrator-Passwort muss vor der Nutzung der Konsole geändert werden','pt-BR':'A senha de administrador deve ser alterada antes de usar o console','ru':'Перед использованием консоли необходимо сменить пароль администратора','ar':'يجب تغيير كلمة مرور المسؤول قبل استخدام وحدة التحكم'},
+  'administrator password is not configured': {'zh-CN':'管理员密码未配置','zh-TW':'管理員密碼未設定','ja':'管理者パスワードが構成されていません','ko':'관리자 비밀번호가 구성되지 않았습니다','es':'La contraseña de administrador no está configurada','fr':'Le mot de passe administrateur n\'est pas configuré','de':'Das Administrator-Passwort ist nicht konfiguriert','pt-BR':'A senha de administrador não está configurada','ru':'Пароль администратора не настроен','ar':'كلمة مرور المسؤول غير مكونة'},
+  'invalid administrator password': {'zh-CN':'管理员密码错误','zh-TW':'管理員密碼錯誤','ja':'管理者パスワードが正しくありません','ko':'관리자 비밀번호가 올바르지 않습니다','es':'Contraseña de administrador no válida','fr':'Mot de passe administrateur incorrect','de':'Ungültiges Administrator-Passwort','pt-BR':'Senha de administrador inválida','ru':'Неверный пароль администратора','ar':'كلمة مرور المسؤول غير صالحة'},
+  'too many failed login attempts; try again later': {'zh-CN':'登录失败次数过多，请稍后重试','zh-TW':'登入失敗次數過多，請稍後重試','ja':'ログイン失敗が多すぎます。しばらくしてから再試行してください','ko':'로그인 실패가 너무 많습니다. 잠시 후 다시 시도하세요','es':'Demasiados intentos de inicio de sesión fallidos; inténtelo de nuevo más tarde','fr':'Trop de tentatives de connexion échouées ; réessayez plus tard','de':'Zu viele fehlgeschlagene Anmeldeversuche; versuchen Sie es später erneut','pt-BR':'Muitas tentativas de login com falha; tente novamente mais tarde','ru':'Слишком много неудачных попыток входа; повторите позже','ar':'محاولات تسجيل دخول فاشلة كثيرة؛ حاول مرة أخرى لاحقًا'},
+  'current password is invalid': {'zh-CN':'当前密码错误','zh-TW':'目前密碼錯誤','ja':'現在のパスワードが正しくありません','ko':'현재 비밀번호가 올바르지 않습니다','es':'La contraseña actual no es válida','fr':'Le mot de passe actuel est incorrect','de':'Das aktuelle Passwort ist ungültig','pt-BR':'A senha atual é inválida','ru':'Текущий пароль неверен','ar':'كلمة المرور الحالية غير صالحة'},
+  'administrator password could not be saved; check the persistent data directory permissions': {'zh-CN':'管理员密码保存失败，请检查数据目录权限','zh-TW':'管理員密碼儲存失敗，請檢查資料目錄權限','ja':'管理者パスワードを保存できませんでした。データディレクトリの権限を確認してください','ko':'관리자 비밀번호를 저장하지 못했습니다. 데이터 디렉터리 권한을 확인하세요','es':'No se pudo guardar la contraseña de administrador; compruebe los permisos del directorio de datos','fr':'Impossible d\'enregistrer le mot de passe administrateur ; vérifiez les autorisations du répertoire de données','de':'Das Administrator-Passwort konnte nicht gespeichert werden; überprüfen Sie die Berechtigungen des Datenverzeichnisses','pt-BR':'Não foi possível salvar a senha de administrador; verifique as permissões do diretório de dados','ru':'Не удалось сохранить пароль администратора; проверьте права доступа к каталогу данных','ar':'تعذر حفظ كلمة مرور المسؤول؛ تحقق من أذونات دليل البيانات'},
+  'administrator password could not be hashed': {'zh-CN':'管理员密码加密失败','zh-TW':'管理員密碼加密失敗','ja':'管理者パスワードをハッシュ化できませんでした','ko':'관리자 비밀번호를 해싱하지 못했습니다','es':'No se pudo cifrar la contraseña de administrador','fr':'Impossible de hacher le mot de passe administrateur','de':'Das Administrator-Passwort konnte nicht gehasht werden','pt-BR':'Não foi possível gerar o hash da senha de administrador','ru':'Не удалось хешировать пароль администратора','ar':'تعذر تجزئة كلمة مرور المسؤول'},
+  'session failure': {'zh-CN':'会话异常','zh-TW':'工作階段異常','ja':'セッションエラー','ko':'세션 오류','es':'Fallo de sesión','fr':'Échec de session','de':'Sitzungsfehler','pt-BR':'Falha de sessão','ru':'Ошибка сессии','ar':'فشل الجلسة'},
+  'Request failed': {'zh-CN':'请求失败','zh-TW':'要求失敗','ja':'リクエストに失敗しました','ko':'요청 실패','es':'La solicitud falló','fr':'Échec de la requête','de':'Anfrage fehlgeschlagen','pt-BR':'A solicitação falhou','ru':'Ошибка запроса','ar':'فشل الطلب'},
+  'Proxy bound': {'zh-CN':'已绑定代理','zh-TW':'已綁定代理','ja':'プロキシをバインドしました','ko':'프록시가 바인딩되었습니다','es':'Proxy vinculado','fr':'Proxy lié','de':'Proxy gebunden','pt-BR':'Proxy vinculado','ru':'Прокси привязан','ar':'تم ربط البروكسي'},
+  'Proxy unbound': {'zh-CN':'已解绑代理','zh-TW':'已解綁代理','ja':'プロキシのバインドを解除しました','ko':'프록시 바인딩이 해제되었습니다','es':'Proxy desvinculado','fr':'Proxy délié','de':'Proxy-Verbindung aufgehoben','pt-BR':'Proxy desvinculado','ru':'Прокси отвязан','ar':'تم إلغاء ربط البروكسي'},
+  'upstream is rate limiting; try again shortly': {'zh-CN':'上游限流中，请稍后重试','zh-TW':'上游限流中，請稍後重試','ja':'アップストリームが制限中です。しばらくしてから再試行してください','ko':'업스트림이 요청을 제한하고 있습니다. 잠시 후 다시 시도하세요','es':'El proveedor está limitando las solicitudes; inténtelo de nuevo más tarde','fr':'L\'amont limite les requêtes ; réessayez sous peu','de':'Der Upstream begrenzt Anfragen; versuchen Sie es bald erneut','pt-BR':'O upstream está limitando; tente novamente em breve','ru':'Апстрим ограничивает запросы; повторите чуть позже','ar':'المصدر يحد من الطلبات؛ حاول مرة أخرى قريبًا'},
+  'upstream returned empty completion; the requested model may be unavailable for this tenant': {'zh-CN':'上游返回空回复，该模型可能不适用于此租户','zh-TW':'上游返回空回覆，該模型可能不適用於此租戶','ja':'アップストリームが空の応答を返しました。このモデルはこのテナントでは利用できない可能性があります','ko':'업스트림이 빈 응답을 반환했습니다. 이 모델은 이 테넌트에서 사용할 수 없을 수 있습니다','es':'El proveedor devolvió una respuesta vacía; el modelo solicitado puede no estar disponible para este inquilino','fr':'L\'amont a renvoyé une réponse vide ; le modèle demandé est peut-être indisponible pour ce locataire','de':'Der Upstream lieferte eine leere Antwort; das angeforderte Modell ist für diesen Mandanten möglicherweise nicht verfügbar','pt-BR':'O upstream retornou uma resposta vazia; o modelo solicitado pode não estar disponível para este locatário','ru':'Апстрим вернул пустой ответ; запрошенная модель может быть недоступна для этого тенанта','ar':'أعاد المصدر ردًا فارغًا؛ قد يكون النموذج المطلوب غير متاح لهذا المستأجر'},
+  'M365 content policy blocked this request; try again or switch account': {'zh-CN':'M365 内容策略拦截了此请求，请重试或更换账号','zh-TW':'M365 內容策略攔截了此要求，請重試或更換帳號','ja':'M365 のコンテンツポリシーによりこのリクエストがブロックされました。再試行するかアカウントを変更してください','ko':'M365 콘텐츠 정책이 이 요청을 차단했습니다. 다시 시도하거나 계정을 변경하세요','es':'La política de contenido de M365 bloqueó esta solicitud; inténtelo de nuevo o cambie de cuenta','fr':'La politique de contenu M365 a bloqué cette requête ; réessayez ou changez de compte','de':'Die M365-Inhaltsrichtlinie hat diese Anfrage blockiert; versuchen Sie es erneut oder wechseln Sie das Konto','pt-BR':'A política de conteúdo do M365 bloqueou esta solicitação; tente novamente ou troque de conta','ru':'Политика контента M365 заблокировала этот запрос; повторите или смените аккаунт','ar':'حظرت سياسة محتوى M365 هذا الطلب؛ أعد المحاولة أو بدّل الحساب'},
+  'image generation daily limit reached; try again tomorrow': {'zh-CN':'图像生成已达每日上限，请明天再试','zh-TW':'圖像生成已達每日上限，請明天再試','ja':'画像生成の1日の上限に達しました。明日もう一度お試しください','ko':'이미지 생성 일일 한도에 도달했습니다. 내일 다시 시도하세요','es':'Se alcanzó el límite diario de generación de imágenes; inténtelo mañana','fr':'Limite quotidienne de génération d\'images atteinte ; réessayez demain','de':'Tägliches Limit zur Bilderzeugung erreicht; versuchen Sie es morgen erneut','pt-BR':'Limite diário de geração de imagens atingido; tente amanhã','ru':'Достигнут дневной лимит генерации изображений; повторите завтра','ar':'تم الوصول إلى الحد اليومي لتوليد الصور؛ حاول غدًا'},
+  'no account available': {'zh-CN':'没有可用账号','zh-TW':'沒有可用帳號','ja':'利用可能なアカウントがありません','ko':'사용 가능한 계정이 없습니다','es':'No hay cuentas disponibles','fr':'Aucun compte disponible','de':'Kein Konto verfügbar','pt-BR':'Nenhuma conta disponível','ru':'Нет доступных аккаунтов','ar':'لا توجد حسابات متاحة'},
+  'account missing oid/tid — re-login with PKCE browser client': {'zh-CN':'账号缺少 oid/tid，请用 PKCE 浏览器客户端重新登录','zh-TW':'帳號缺少 oid/tid，請用 PKCE 瀏覽器用戶端重新登入','ja':'アカウントに oid/tid がありません。PKCE ブラウザクライアントで再ログインしてください','ko':'계정에 oid/tid가 없습니다. PKCE 브라우저 클라이언트로 다시 로그인하세요','es':'A la cuenta le falta oid/tid; inicie sesión de nuevo con el cliente de navegador PKCE','fr':'Il manque oid/tid au compte ; reconnectez-vous avec le client navigateur PKCE','de':'Dem Konto fehlt oid/tid; melden Sie sich mit dem PKCE-Browser-Client erneut an','pt-BR':'A conta está sem oid/tid; faça login novamente com o cliente de navegador PKCE','ru':'У аккаунта отсутствует oid/tid; повторите вход через браузерный клиент PKCE','ar':'الحساب يفتقد oid/tid؛ أعد تسجيل الدخول باستخدام عميل متصفح PKCE'},
+  'account missing oid/tid — re-login with PKCE': {'zh-CN':'账号缺少 oid/tid，请用 PKCE 重新登录','zh-TW':'帳號缺少 oid/tid，請用 PKCE 重新登入','ja':'アカウントに oid/tid がありません。PKCE で再ログインしてください','ko':'계정에 oid/tid가 없습니다. PKCE로 다시 로그인하세요','es':'A la cuenta le falta oid/tid; inicie sesión de nuevo con PKCE','fr':'Il manque oid/tid au compte ; reconnectez-vous avec PKCE','de':'Dem Konto fehlt oid/tid; melden Sie sich mit PKCE erneut an','pt-BR':'A conta está sem oid/tid; faça login novamente com PKCE','ru':'У аккаунта отсутствует oid/tid; повторите вход через PKCE','ar':'الحساب يفتقد oid/tid؛ أعد تسجيل الدخول باستخدام PKCE'},
+  'account missing oid/tid': {'zh-CN':'账号缺少 oid/tid','zh-TW':'帳號缺少 oid/tid','ja':'アカウントに oid/tid がありません','ko':'계정에 oid/tid가 없습니다','es':'A la cuenta le falta oid/tid','fr':'Il manque oid/tid au compte','de':'Dem Konto fehlt oid/tid','pt-BR':'A conta está sem oid/tid','ru':'У аккаунта отсутствует oid/tid','ar':'الحساب يفتقد oid/tid'},
+  'model returned an invalid tool routing decision': {'zh-CN':'模型返回了无效的工具路由决策','zh-TW':'模型返回了無效的工具路由決策','ja':'モデルが無効なツールルーティング判定を返しました','ko':'모델이 잘못된 도구 라우팅 결정을 반환했습니다','es':'El modelo devolvió una decisión de enrutamiento de herramientas no válida','fr':'Le modèle a renvoyé une décision de routage d\'outils invalide','de':'Das Modell lieferte eine ungültige Tool-Routing-Entscheidung','pt-BR':'O modelo retornou uma decisão de roteamento de ferramentas inválida','ru':'Модель вернула некорректное решение о маршрутизации инструментов','ar':'أعاد النموذج قرار توجيه أدوات غير صالح'},
+  'model did not select a required tool after constrained retry': {'zh-CN':'受限重试后模型仍未选择必需工具','zh-TW':'受限重試後模型仍未選擇必需工具','ja':'制約付き再試行後もモデルが必須ツールを選択しませんでした','ko':'제약 재시도 후에도 모델이 필수 도구를 선택하지 않았습니다','es':'El modelo no seleccionó una herramienta requerida tras el reintento restringido','fr':'Le modèle n\'a pas sélectionné l\'outil requis après la relance contrainte','de':'Das Modell hat nach eingeschränktem Wiederholungsversuch kein erforderliches Tool ausgewählt','pt-BR':'O modelo não selecionou uma ferramenta necessária após a nova tentativa restrita','ru':'Модель не выбрала требуемый инструмент после ограниченного повтора','ar':'لم يحدد النموذج الأداة المطلوبة بعد إعادة المحاولة المقيدة'},
+  'stream unsupported': {'zh-CN':'不支持流式传输','zh-TW':'不支援串流傳輸','ja':'ストリーミングはサポートされていません','ko':'스트리밍이 지원되지 않습니다','es':'Streaming no admitido','fr':'Diffusion non prise en charge','de':'Streaming nicht unterstützt','pt-BR':'Streaming não suportado','ru':'Потоковая передача не поддерживается','ar':'البث غير مدعوم'},
+  'M365 image generation quota is exhausted; try again later or use another account': {'zh-CN':'M365 图像生成配额已耗尽，请稍后重试或更换账号','zh-TW':'M365 圖像生成配額已耗盡，請稍後重試或更換帳號','ja':'M365 の画像生成クォータを使い切りました。しばらくして再試行するか、別のアカウントを使用してください','ko':'M365 이미지 생성 할당량이 소진되었습니다. 잠시 후 다시 시도하거나 다른 계정을 사용하세요','es':'La cuota de generación de imágenes de M365 está agotada; inténtelo más tarde o use otra cuenta','fr':'Le quota de génération d\'images M365 est épuisé ; réessayez plus tard ou utilisez un autre compte','de':'Das M365-Kontingent zur Bilderzeugung ist aufgebraucht; versuchen Sie es später erneut oder verwenden Sie ein anderes Konto','pt-BR':'A cota de geração de imagens do M365 esgotou; tente mais tarde ou use outra conta','ru':'Квота генерации изображений M365 исчерпана; повторите позже или используйте другой аккаунт','ar':'استنفدت حصة توليد صور M365؛ حاول لاحقًا أو استخدم حسابًا آخر'},
+  'upstream returned no image resource': {'zh-CN':'上游未返回图像资源','zh-TW':'上游未返回圖像資源','ja':'アップストリームが画像リソースを返しませんでした','ko':'업스트림이 이미지 리소스를 반환하지 않았습니다','es':'El proveedor no devolvió ningún recurso de imagen','fr':'L\'amont n\'a renvoyé aucune ressource d\'image','de':'Der Upstream lieferte keine Bildressource','pt-BR':'O upstream não retornou recurso de imagem','ru':'Апстрим не вернул ресурс изображения','ar':'لم يُعد المصدر أي مورد صورة'},
+  'invalid upstream image data': {'zh-CN':'上游图像数据无效','zh-TW':'上游圖像資料無效','ja':'アップストリームの画像データが無効です','ko':'업스트림 이미지 데이터가 잘못되었습니다','es':'Datos de imagen del proveedor no válidos','fr':'Données d\'image amont invalides','de':'Ungültige Upstream-Bilddaten','pt-BR':'Dados de imagem do upstream inválidos','ru':'Некорректные данные изображения от апстрима','ar':'بيانات صورة المصدر غير صالحة'},
+  'upstream returned URL, not b64_json': {'zh-CN':'上游返回了 URL 而非 b64_json','zh-TW':'上游返回了 URL 而非 b64_json','ja':'アップストリームが b64_json ではなく URL を返しました','ko':'업스트림이 b64_json이 아닌 URL을 반환했습니다','es':'El proveedor devolvió una URL, no b64_json','fr':'L\'amont a renvoyé une URL, pas de b64_json','de':'Der Upstream lieferte eine URL, kein b64_json','pt-BR':'O upstream retornou URL, não b64_json','ru':'Апстрим вернул URL, а не b64_json','ar':'أعاد المصدر عنوان URL، وليس b64_json'},
+  'image is required': {'zh-CN':'必须提供图像','zh-TW':'必須提供圖像','ja':'画像が必要です','ko':'이미지가 필요합니다','es':'Se requiere una imagen','fr':'Une image est requise','de':'Ein Bild ist erforderlich','pt-BR':'Uma imagem é necessária','ru':'Требуется изображение','ar':'الصورة مطلوبة'},
+  'prompt is required': {'zh-CN':'必须提供提示词','zh-TW':'必須提供提示詞','ja':'プロンプトが必要です','ko':'프롬프트가 필요합니다','es':'Se requiere un prompt','fr':'Un prompt est requis','de':'Ein Prompt ist erforderlich','pt-BR':'Um prompt é necessário','ru':'Требуется промпт','ar':'المطالبة (prompt) مطلوبة'},
+  'n must be between 1 and 10': {'zh-CN':'n 必须在 1 到 10 之间','zh-TW':'n 必須在 1 到 10 之間','ja':'n は 1〜10 の範囲で指定してください','ko':'n은 1에서 10 사이여야 합니다','es':'n debe estar entre 1 y 10','fr':'n doit être compris entre 1 et 10','de':'n muss zwischen 1 und 10 liegen','pt-BR':'n deve estar entre 1 e 10','ru':'n должно быть от 1 до 10','ar':'يجب أن يكون n بين 1 و10'},
+  'n must be an integer': {'zh-CN':'n 必须为整数','zh-TW':'n 必須為整數','ja':'n は整数で指定してください','ko':'n은 정수여야 합니다','es':'n debe ser un número entero','fr':'n doit être un nombre entier','de':'n muss eine Ganzzahl sein','pt-BR':'n deve ser um número inteiro','ru':'n должно быть целым числом','ar':'يجب أن يكون n عددًا صحيحًا'},
+  'response_format must be url or b64_json': {'zh-CN':'response_format 必须为 url 或 b64_json','zh-TW':'response_format 必須為 url 或 b64_json','ja':'response_format は url または b64_json である必要があります','ko':'response_format은 url 또는 b64_json이어야 합니다','es':'response_format debe ser url o b64_json','fr':'response_format doit être url ou b64_json','de':'response_format muss url oder b64_json sein','pt-BR':'response_format deve ser url ou b64_json','ru':'response_format должен быть url или b64_json','ar':'يجب أن يكون response_format هو url أو b64_json'},
+  'image exceeds 20 MiB': {'zh-CN':'图像超过 20 MiB','zh-TW':'圖像超過 20 MiB','ja':'画像が 20 MiB を超えています','ko':'이미지가 20 MiB를 초과합니다','es':'La imagen supera los 20 MiB','fr':'L\'image dépasse 20 Mio','de':'Das Bild überschreitet 20 MiB','pt-BR':'A imagem excede 20 MiB','ru':'Изображение превышает 20 МиБ','ar':'تتجاوز الصورة 20 ميبيبايت'},
+  'image must be PNG, JPEG, or WebP': {'zh-CN':'图像必须为 PNG、JPEG 或 WebP 格式','zh-TW':'圖像必須為 PNG、JPEG 或 WebP 格式','ja':'画像は PNG、JPEG、または WebP である必要があります','ko':'이미지는 PNG, JPEG 또는 WebP여야 합니다','es':'La imagen debe ser PNG, JPEG o WebP','fr':'L\'image doit être en PNG, JPEG ou WebP','de':'Das Bild muss PNG, JPEG oder WebP sein','pt-BR':'A imagem deve ser PNG, JPEG ou WebP','ru':'Изображение должно быть в формате PNG, JPEG или WebP','ar':'يجب أن تكون الصورة بصيغة PNG أو JPEG أو WebP'},
+  'could not read image': {'zh-CN':'无法读取图像','zh-TW':'無法讀取圖像','ja':'画像を読み込めませんでした','ko':'이미지를 읽을 수 없습니다','es':'No se pudo leer la imagen','fr':'Impossible de lire l\'image','de':'Bild konnte nicht gelesen werden','pt-BR':'Não foi possível ler a imagem','ru':'Не удалось прочитать изображение','ar':'تعذر قراءة الصورة'},
+  'could not encode image edit request': {'zh-CN':'无法编码图像编辑请求','zh-TW':'無法編碼圖像編輯要求','ja':'画像編集リクエストをエンコードできませんでした','ko':'이미지 편집 요청을 인코딩할 수 없습니다','es':'No se pudo codificar la solicitud de edición de imagen','fr':'Impossible d\'encoder la requête d\'édition d\'image','de':'Bildbearbeitungsanfrage konnte nicht kodiert werden','pt-BR':'Não foi possível codificar a solicitação de edição de imagem','ru':'Не удалось закодировать запрос на редактирование изображения','ar':'تعذر ترميز طلب تحرير الصورة'},
+  'invalid multipart image edit request': {'zh-CN':'无效的图像编辑 multipart 请求','zh-TW':'無效的圖像編輯 multipart 要求','ja':'無効なマルチパート画像編集リクエストです','ko':'잘못된 멀티파트 이미지 편집 요청입니다','es':'Solicitud multipart de edición de imagen no válida','fr':'Requête multipart d\'édition d\'image invalide','de':'Ungültige Multipart-Bildbearbeitungsanfrage','pt-BR':'Solicitação multipart de edição de imagem inválida','ru':'Некорректный multipart-запрос на редактирование изображения','ar':'طلب تحرير صورة متعدد الأجزاء غير صالح'},
+  'message or attachment required': {'zh-CN':'必须提供消息或附件','zh-TW':'必須提供訊息或附件','ja':'メッセージまたは添付ファイルが必要です','ko':'메시지 또는 첨부파일이 필요합니다','es':'Se requiere un mensaje o adjunto','fr':'Un message ou une pièce jointe est requis','de':'Eine Nachricht oder ein Anhang ist erforderlich','pt-BR':'É necessária uma mensagem ou anexo','ru':'Требуется сообщение или вложение','ar':'الرسالة أو المرفق مطلوب'},
+  'messages required': {'zh-CN':'必须提供消息列表','zh-TW':'必須提供訊息列表','ja':'メッセージが必要です','ko':'메시지가 필요합니다','es':'Se requieren mensajes','fr':'Des messages sont requis','de':'Nachrichten sind erforderlich','pt-BR':'Mensagens são necessárias','ru':'Требуются сообщения','ar':'الرسائل مطلوبة'},
+  'message required': {'zh-CN':'必须提供消息','zh-TW':'必須提供訊息','ja':'メッセージが必要です','ko':'메시지가 필요합니다','es':'Se requiere un mensaje','fr':'Un message est requis','de':'Eine Nachricht ist erforderlich','pt-BR':'Uma mensagem é necessária','ru':'Требуется сообщение','ar':'الرسالة مطلوبة'},
+  'bad json: model required': {'zh-CN':'请求体 JSON 无效：缺少 model','zh-TW':'請求體 JSON 無效：缺少 model','ja':'JSON が不正です: model が必要です','ko':'잘못된 JSON: model이 필요합니다','es':'JSON no válido: se requiere model','fr':'JSON invalide : model requis','de':'Ungültiges JSON: model erforderlich','pt-BR':'JSON inválido: model é necessário','ru':'Некорректный JSON: требуется model','ar':'JSON غير صالح: model مطلوب'},
+  'invalid or expired state': {'zh-CN':'state 无效或已过期','zh-TW':'state 無效或已過期','ja':'state が無効または期限切れです','ko':'state가 잘못되었거나 만료되었습니다','es':'state no válido o caducado','fr':'state invalide ou expiré','de':'state ungültig oder abgelaufen','pt-BR':'state inválido ou expirado','ru':'state некорректен или истёк','ar':'state غير صالح أو منتهي الصلاحية'},
+  'authorization result already consumed': {'zh-CN':'授权结果已被使用','zh-TW':'授權結果已被使用','ja':'認証結果はすでに使用されました','ko':'인증 결과가 이미 사용되었습니다','es':'El resultado de la autorización ya fue consumido','fr':'Le résultat de l\'autorisation a déjà été consommé','de':'Das Autorisierungsergebnis wurde bereits verbraucht','pt-BR':'O resultado da autorização já foi consumido','ru':'Результат авторизации уже использован','ar':'تم استخدام نتيجة التفويض بالفعل'},
+  'missing state': {'zh-CN':'缺少 state 参数','zh-TW':'缺少 state 參數','ja':'state がありません','ko':'state가 없습니다','es':'Falta state','fr':'state manquant','de':'state fehlt','pt-BR':'state ausente','ru':'Отсутствует state','ar':'state مفقود'},
+  'missing state or authorization result': {'zh-CN':'缺少 state 或授权结果','zh-TW':'缺少 state 或授權結果','ja':'state または認証結果がありません','ko':'state 또는 인증 결과가 없습니다','es':'Falta state o el resultado de autorización','fr':'state ou résultat d\'autorisation manquant','de':'state oder Autorisierungsergebnis fehlt','pt-BR':'Falta state ou o resultado de autorização','ru':'Отсутствует state или результат авторизации','ar':'state أو نتيجة التفويض مفقودة'},
+  'id required': {'zh-CN':'必须提供 id','zh-TW':'必須提供 id','ja':'id が必要です','ko':'id가 필요합니다','es':'Se requiere id','fr':'id requis','de':'id erforderlich','pt-BR':'id é necessário','ru':'Требуется id','ar':'id مطلوب'},
+  'email and password required': {'zh-CN':'必须提供邮箱和密码','zh-TW':'必須提供信箱和密碼','ja':'メールアドレスとパスワードが必要です','ko':'이메일과 비밀번호가 필요합니다','es':'Se requieren correo y contraseña','fr':'E-mail et mot de passe requis','de':'E-Mail und Passwort erforderlich','pt-BR':'E-mail e senha são necessários','ru':'Требуются email и пароль','ar':'البريد الإلكتروني وكلمة المرور مطلوبان'},
+  'bad json': {'zh-CN':'请求体 JSON 无效','zh-TW':'請求體 JSON 無效','ja':'JSON が不正です','ko':'잘못된 JSON','es':'JSON no válido','fr':'JSON invalide','de':'Ungültiges JSON','pt-BR':'JSON inválido','ru':'Некорректный JSON','ar':'JSON غير صالح'},
+  'method not allowed': {'zh-CN':'请求方法不被允许','zh-TW':'要求方法不被允許','ja':'許可されていないメソッドです','ko':'허용되지 않는 메서드입니다','es':'Método no permitido','fr':'Méthode non autorisée','de':'Methode nicht erlaubt','pt-BR':'Método não permitido','ru':'Метод не разрешён','ar':'الطريقة غير مسموحة'},
+  'not found': {'zh-CN':'未找到','zh-TW':'未找到','ja':'見つかりません','ko':'찾을 수 없습니다','es':'No encontrado','fr':'Introuvable','de':'Nicht gefunden','pt-BR':'Não encontrado','ru':'Не найдено','ar':'غير موجود'},
+  'key not found': {'zh-CN':'密钥未找到','zh-TW':'金鑰未找到','ja':'キーが見つかりません','ko':'키를 찾을 수 없습니다','es':'Clave no encontrada','fr':'Clé introuvable','de':'Schlüssel nicht gefunden','pt-BR':'Chave não encontrada','ru':'Ключ не найден','ar':'المفتاح غير موجود'},
+  'conversation id is required': {'zh-CN':'必须提供对话 ID','zh-TW':'必須提供對話 ID','ja':'会話 ID が必要です','ko':'대화 ID가 필요합니다','es':'Se requiere el ID de conversación','fr':'L\'ID de conversation est requis','de':'Konversations-ID ist erforderlich','pt-BR':'O ID da conversa é necessário','ru':'Требуется ID разговора','ar':'معرف المحادثة مطلوب'},
+  'conversation history is not available': {'zh-CN':'对话历史不可用','zh-TW':'對話歷史不可用','ja':'会話履歴を利用できません','ko':'대화 기록을 사용할 수 없습니다','es':'El historial de conversación no está disponible','fr':'L\'historique de conversation n\'est pas disponible','de':'Konversationsverlauf ist nicht verfügbar','pt-BR':'O histórico da conversa não está disponível','ru':'История разговора недоступна','ar':'سجل المحادثة غير متاح'},
+  'session_id required': {'zh-CN':'必须提供 session_id','zh-TW':'必須提供 session_id','ja':'session_id が必要です','ko':'session_id가 필요합니다','es':'Se requiere session_id','fr':'session_id requis','de':'session_id erforderlich','pt-BR':'session_id é necessário','ru':'Требуется session_id','ar':'session_id مطلوب'},
+  'session not found': {'zh-CN':'会话未找到','zh-TW':'工作階段未找到','ja':'セッションが見つかりません','ko':'세션을 찾을 수 없습니다','es':'Sesión no encontrada','fr':'Session introuvable','de':'Sitzung nicht gefunden','pt-BR':'Sessão não encontrada','ru':'Сессия не найдена','ar':'الجلسة غير موجودة'},
+  'valid API key required': {'zh-CN':'需要有效的 API Key','zh-TW':'需要有效的 API Key','ja':'有効な API キーが必要です','ko':'유효한 API 키가 필요합니다','es':'Se requiere una clave API válida','fr':'Une clé API valide est requise','de':'Ein gültiger API-Schlüssel ist erforderlich','pt-BR':'Uma chave API válida é necessária','ru':'Требуется действительный API-ключ','ar':'مفتاح API صالح مطلوب'},
+  'invalid API key': {'zh-CN':'API Key 无效','zh-TW':'API Key 無效','ja':'API キーが無効です','ko':'API 키가 잘못되었습니다','es':'Clave API no válida','fr':'Clé API invalide','de':'Ungültiger API-Schlüssel','pt-BR':'Chave API inválida','ru':'Недействительный API-ключ','ar':'مفتاح API غير صالح'},
+  'web interface unavailable': {'zh-CN':'Web 界面不可用','zh-TW':'Web 介面不可用','ja':'Web インターフェースを利用できません','ko':'웹 인터페이스를 사용할 수 없습니다','es':'Interfaz web no disponible','fr':'Interface web indisponible','de':'Weboberfläche nicht verfügbar','pt-BR':'Interface web indisponível','ru':'Веб-интерфейс недоступен','ar':'واجهة الويب غير متاحة'},
+  'only cloudflare is implemented': {'zh-CN':'目前仅支持 Cloudflare','zh-TW':'目前僅支援 Cloudflare','ja':'現在は Cloudflare のみサポートされています','ko':'현재 Cloudflare만 지원됩니다','es':'Solo Cloudflare está implementado','fr':'Seul Cloudflare est implémenté','de':'Nur Cloudflare ist implementiert','pt-BR':'Apenas Cloudflare está implementado','ru':'Реализована только Cloudflare','ar':'تم تنفيذ Cloudflare فقط'},
+  'deployment not found': {'zh-CN':'部署未找到','zh-TW':'部署未找到','ja':'デプロイが見つかりません','ko':'배포를 찾을 수 없습니다','es':'Despliegue no encontrado','fr':'Déploiement introuvable','de':'Bereitstellung nicht gefunden','pt-BR':'Implantação não encontrada','ru':'Развёртывание не найдено','ar':'النشر غير موجود'},
+  'instruction id required': {'zh-CN':'必须提供指令 ID','zh-TW':'必須提供指令 ID','ja':'命令 ID が必要です','ko':'명령 ID가 필요합니다','es':'Se requiere el ID de instrucción','fr':'L\'ID d\'instruction est requis','de':'Anweisungs-ID erforderlich','pt-BR':'O ID da instrução é necessário','ru':'Требуется ID инструкции','ar':'معرف التعليمات مطلوب'},
+  'administrator login required for this operation; sign in via /api/admin/login and retry with the admin session cookie': {'zh-CN':'此操作需要管理员登录，请通过 /api/admin/login 登录后携带管理员会话 Cookie 重试','zh-TW':'此操作需要管理員登入，請透過 /api/admin/login 登入後攜帶管理員工作階段 Cookie 重試','ja':'この操作には管理者ログインが必要です。/api/admin/login でログインし、管理者セッション Cookie を付けて再試行してください','ko':'이 작업에는 관리자 로그인이 필요합니다. /api/admin/login으로 로그인한 후 관리자 세션 쿠키를 포함하여 다시 시도하세요','es':'Esta operación requiere inicio de sesión de administrador; inicie sesión vía /api/admin/login y reitente con la cookie de sesión de administrador','fr':'Cette opération requiert une connexion administrateur ; connectez-vous via /api/admin/login puis réessayez avec le cookie de session administrateur','de':'Dieser Vorgang erfordert eine Administrator-Anmeldung; melden Sie sich über /api/admin/login an und wiederholen Sie ihn mit dem Admin-Sitzungscookie','pt-BR':'Esta operação requer login de administrador; entre via /api/admin/login e tente novamente com o cookie de sessão de administrador','ru':'Для этой операции требуется вход администратора; войдите через /api/admin/login и повторите с cookie-сессией администратора','ar':'تتطلب هذه العملية تسجيل دخول المسؤول؛ سجّل الدخول عبر /api/admin/login وأعد المحاولة مع ملف تعريف جلسة المسؤول'},
+  'substrate request failed': {'zh-CN':'Substrate 请求失败','zh-TW':'Substrate 要求失敗','ja':'Substrate リクエストに失敗しました','ko':'Substrate 요청 실패','es':'Falló la solicitud a Substrate','fr':'Échec de la requête Substrate','de':'Substrate-Anfrage fehlgeschlagen','pt-BR':'Falha na solicitação ao Substrate','ru':'Ошибка запроса к Substrate','ar':'فشل طلب Substrate'},
+  'substrate read failed': {'zh-CN':'Substrate 读取失败','zh-TW':'Substrate 讀取失敗','ja':'Substrate の読み取りに失敗しました','ko':'Substrate 읽기 실패','es':'Error al leer de Substrate','fr':'Échec de lecture Substrate','de':'Substrate-Lesefehler','pt-BR':'Falha ao ler do Substrate','ru':'Ошибка чтения Substrate','ar':'فشل قراءة Substrate'},
+  'failed to create substrate request': {'zh-CN':'无法创建 Substrate 请求','zh-TW':'無法建立 Substrate 要求','ja':'Substrate リクエストを作成できませんでした','ko':'Substrate 요청을 생성할 수 없습니다','es':'No se pudo crear la solicitud a Substrate','fr':'Impossible de créer la requête Substrate','de':'Substrate-Anfrage konnte nicht erstellt werden','pt-BR':'Não foi possível criar a solicitação ao Substrate','ru':'Не удалось создать запрос к Substrate','ar':'تعذر إنشاء طلب Substrate'},
+  'read body': {'zh-CN':'读取请求体失败','zh-TW':'讀取請求體失敗','ja':'リクエストボディの読み取りに失敗しました','ko':'요청 본문을 읽지 못했습니다','es':'No se pudo leer el cuerpo','fr':'Échec de lecture du corps','de':'Body konnte nicht gelesen werden','pt-BR':'Não foi possível ler o corpo','ru':'Не удалось прочитать тело запроса','ar':'تعذر قراءة نص الطلب'},
+  'marshal settings': {'zh-CN':'设置序列化失败','zh-TW':'設定序列化失敗','ja':'設定のシリアライズに失敗しました','ko':'설정 직렬화 실패','es':'Error al serializar la configuración','fr':'Échec de sérialisation des paramètres','de':'Fehler beim Serialisieren der Einstellungen','pt-BR':'Falha ao serializar as configurações','ru':'Ошибка сериализации настроек','ar':'فشل تسلسل الإعدادات'},
+  'pkce failure': {'zh-CN':'PKCE 流程失败','zh-TW':'PKCE 流程失敗','ja':'PKCE 処理に失敗しました','ko':'PKCE 처리 실패','es':'Fallo de PKCE','fr':'Échec PKCE','de':'PKCE-Fehler','pt-BR':'Falha de PKCE','ru':'Ошибка PKCE','ar':'فشل PKCE'},
+  'state failure': {'zh-CN':'state 处理失败','zh-TW':'state 處理失敗','ja':'state 処理に失敗しました','ko':'state 처리 실패','es':'Fallo de state','fr':'Échec de state','de':'state-Fehler','pt-BR':'Falha de state','ru':'Ошибка state','ar':'فشل state'},
+  'Copy the callback URL from the popup address bar': {'zh-CN':'复制弹出页地址栏中的回调地址','zh-TW':'從彈出頁網址列複製回呼位址','ja':'ポップアップのアドレスバーからコールバック URL をコピー','ko':'팝업 주소창에서 콜백 URL을 복사하세요','es':'Copie la URL de devolución desde la barra de direcciones del emergente','fr':'Copiez l\'URL de rappel depuis la barre d\'adresse de la fenêtre contextuelle','de':'Callback-URL aus der Adressleiste des Popups kopieren','pt-BR':'Copie a URL de retorno da barra de endereços do pop-up','ru':'Скопируйте URL обратного вызова из адресной строки всплывающего окна','ar':'انسخ عنوان URL لإعادة الاستدعاء من شريط عنوان النافذة المنبثقة'},
+  'After signing in, the popup will show a blank page or an error — this is normal. Copy the ': {'zh-CN':'登录后弹出页会显示空白或错误——这是正常的。复制','zh-TW':'登入後彈出頁會顯示空白或錯誤——這是正常的。複製','ja':'サインイン後、ポップアップに空白ページやエラーが表示されます——これは正常です。','ko':'로그인 후 팝업 페이지에 빈 화면이나 오류가 표시됩니다 — 이는 정상입니다. ','es':'Después de iniciar sesión, el emergente mostrará una página en blanco o un error; esto es normal. Copie la ','fr':'Après la connexion, la fenêtre contextuelle affichera une page blanche ou une erreur — c\'est normal. Copiez la ','de':'Nach der Anmeldung zeigt das Popup eine leere Seite oder einen Fehler an — das ist normal. Kopieren Sie die ','pt-BR':'Após entrar, o pop-up mostrará uma página em branco ou um erro; isso é normal. Copie a ','ru':'После входа во всплывающем окне отобразится пустая страница или ошибка — это нормально. Скопируйте ','ar':'بعد تسجيل الدخول، ستعرض النافذة المنبثقة صفحة فارغة أو خطأً — هذا طبيعي. انسخ '},
+  'popup address bar': {'zh-CN':'弹出页地址栏','zh-TW':'彈出頁網址列','ja':'ポップアップのアドレスバー','ko':'팝업 주소창','es':'barra de direcciones del emergente','fr':'barre d\'adresse de la fenêtre contextuelle','de':'Adressleiste des Popups','pt-BR':'barra de endereços do pop-up','ru':'адресную строку всплывающего окна','ar':'شريط عنوان النافذة المنبثقة'},
+  ' full URL (including ': {'zh-CN':'的完整网址（包含','zh-TW':'的完整網址（包含','ja':'の完全な URL（次を含む: ','ko':'의 전체 URL(다음 포함: ','es':' la URL completa (incluye ','fr':' l\'URL complète (incluant ','de':' die vollständige URL (einschließlich ','pt-BR':' a URL completa (incluindo ','ru':' полный URL (включая ','ar':' عنوان URL الكامل (يتضمن '},
+  ' and ': {'zh-CN':'和','zh-TW':'與','ja':'と','ko':'와 ','es':' y ','fr':' et ','de':' und ','pt-BR':' e ','ru':' и ','ar':' و '},
+  ').': {'zh-CN':'）。','zh-TW':'）。','ja':'）。','ko':').','es':').','fr':').','de':').','pt-BR':').','ru':').','ar':').'},
+  'Paste it into the "Callback URL" field below and click "Confirm and add" to complete authorization': {'zh-CN':'粘贴到下方"回调地址"输入框，点击"确认添加"完成授权','zh-TW':'貼到下方「回呼位址」輸入框，點擊「確認新增」完成授權','ja':'下の「コールバック URL」入力欄に貼り付け、「確認して追加」をクリックして認証を完了してください','ko':'아래 "콜백 URL" 입력란에 붙여넣고 "확인 후 추가"를 클릭해 인증을 완료하세요','es':'Péguela en el campo "URL de devolución" de abajo y haga clic en "Confirmar y añadir" para completar la autorización','fr':'Collez-la dans le champ « URL de rappel » ci-dessous et cliquez sur « Confirmer et ajouter » pour terminer l\'autorisation','de':'Fügen Sie sie unten in das Feld „Callback-URL" ein und klicken Sie auf „Bestätigen und hinzufügen", um die Autorisierung abzuschließen','pt-BR':'Cole no campo "URL de retorno" abaixo e clique em "Confirmar e adicionar" para concluir a autorização','ru':'Вставьте её в поле «Callback URL» ниже и нажмите «Подтвердить и добавить», чтобы завершить авторизацию','ar':'الصقها في حقل "عنوان URL لإعادة الاستدعاء" أدناه وانقر على "تأكيد وإضافة" لإكمال التفويض'},
+  'After signing in inside the popup window, the page will show blank or an error — ': {'zh-CN':'在弹出窗口中登录后，页面会显示空白或错误——','zh-TW':'在彈出視窗中登入後，頁面會顯示空白或錯誤——','ja':'ポップアップウィンドウでサインインした後、ページに空白やエラーが表示されます——','ko':'팝업 창에서 로그인한 후 페이지에 빈 화면이나 오류가 표시됩니다 — ','es':'Después de iniciar sesión en la ventana emergente, la página mostrará un error o quedará en blanco — ','fr':'Après vous être connecté dans la fenêtre contextuelle, la page affichera un blanc ou une erreur — ','de':'Nach der Anmeldung im Popup zeigt die Seite einen Leerschirm oder einen Fehler — ','pt-BR':'Depois de entrar na janela pop-up, a página mostrará um erro ou ficará em branco — ','ru':'После входа во всплывающем окне страница покажет пустоту или ошибку — ','ar':'بعد تسجيل الدخول في النافذة المنبثقة، ستعرض الصفحة فراغًا أو خطأً — '},
+  'This is normal': {'zh-CN':'这是正常的','zh-TW':'這是正常的','ja':'これは正常です','ko':'이는 정상입니다','es':'Esto es normal','fr':'C\'est normal','de':'Das ist normal','pt-BR':'Isso é normal','ru':'Это нормально','ar':'هذا طبيعي'},
+  ', because the callback endpoint is not a real website. Authorization is ': {'zh-CN':'，因为回调端点不是真正的网站。授权','zh-TW':'，因為回呼端點不是真正的網站。授權','ja':'。コールバックエンドポイントは実際のウェブサイトではないためです。認証は','ko':', 콜백 엔드포인트가 실제 웹사이트가 아니기 때문입니다. 인증이 ','es':', porque el endpoint de devolución no es un sitio web real. La autorización ','fr':', car le point de terminaison de rappel n\'est pas un vrai site web. L\'autorisation ','de':', da der Callback-Endpunkt keine echte Website ist. Die Autorisierung ist ','pt-BR':', porque o endpoint de retorno não é um site real. A autorização ','ru':', потому что конечная точка обратного вызова — не настоящий сайт. Авторизация ','ar':'، لأن نقطة نهاية إعادة الاستدعاء ليست موقعًا حقيقيًا. التفويض '},
+  'not yet ': {'zh-CN':'尚未','zh-TW':'尚未','ja':'まだ','ko':'아직 ','es':'aún no ','fr':'pas encore ','de':'noch nicht ','pt-BR':'ainda não ','ru':'ещё не ','ar':'لم يتم بعد '},
+  'complete. Copy the ': {'zh-CN':'完成。复制弹出页地址栏中的','zh-TW':'完成。複製彈出頁網址列中的','ja':'完了していません。ポップアップのアドレスバーから','ko':'완료되지 않았습니다. 팝업 주소창의 ','es':'completada. Copie la ','fr':'terminée. Copiez la ','de':'abgeschlossen. Kopieren Sie die ','pt-BR':'concluída. Copie a ','ru':'не завершена. Скопируйте ','ar':'مكتملًا. انسخ '},
+  ' (e.g. ': {'zh-CN':'（形如','zh-TW':'（形如','ja':'（例: ','ko':'(예: ','es':'(p. ej. ','fr':'(p. ex. ','de':'(z. B. ','pt-BR':'(ex.: ','ru':'(напр. ','ar':'(مثل '},
+  '), and paste it into the "Callback URL" input below.': {'zh-CN':'），粘贴到下方"回调地址"输入框。','zh-TW':'），貼到下方「回呼位址」輸入框。','ja':'）を、下の「コールバック URL」入力欄に貼り付けてください。','ko':')를 아래 "콜백 URL" 입력란에 붙여넣으세요.','es':') y péguela en el campo "URL de devolución" de abajo.','fr':') et collez-la dans le champ « URL de rappel » ci-dessous.','de':') und fügen Sie sie unten in das Feld „Callback-URL" ein.','pt-BR':') e cole no campo "URL de retorno" abaixo.','ru':') и вставьте её в поле «Callback URL» ниже.','ar':') والصقه في حقل "عنوان URL لإعادة الاستدعاء" أدناه.'},
+  'Supports single-account testing, automatic or specified account': {'zh-CN':'支持单账号测试，自动或指定账号','zh-TW':'支援單帳號測試，自動或指定帳號','ja':'単一アカウントのテストに対応。自動またはアカウント指定','ko':'단일 계정 테스트 지원, 자동 또는 계정 지정','es':'Admite pruebas con una sola cuenta, automática o especificada','fr':'Prend en charge les tests sur un seul compte, automatique ou spécifié','de':'Unterstützt Tests mit einem einzelnen Konto, automatisch oder ausgewählt','pt-BR':'Suporta teste de conta única, automática ou especificada','ru':'Поддерживает тестирование одного аккаунта, автоматически или с выбором','ar':'يدعم اختبار حساب واحد، تلقائيًا أو بتحديد الحساب'},
+  'Model test': {'zh-CN':'模型测试','zh-TW':'模型測試','ja':'モデルテスト','ko':'모델 테스트','es':'Prueba de modelo','fr':'Test de modèle','de':'Modelltest','pt-BR':'Teste de modelo','ru':'Тест модели','ar':'اختبار النموذج'},
+  'Live quota': {'zh-CN':'实时额度','zh-TW':'即時額度','ja':'リアルタイム残量','ko':'실시간 할당량','es':'Cuota en tiempo real','fr':'Quota en temps réel','de':'Echtzeit-Kontingent','pt-BR':'Cota em tempo real','ru':'Квота в реальном времени','ar':'الحصة في الوقت الفعلي'},
+  'Refresh': {'zh-CN':'刷新','zh-TW':'重新整理','ja':'更新','ko':'새로고침','es':'Actualizar','fr':'Actualiser','de':'Aktualisieren','pt-BR':'Atualizar','ru':'Обновить','ar':'تحديث'},
+  'No remaining quota data yet; waiting for the next request to write back': {'zh-CN':'暂无剩余额度数据，等待下一次请求回写','zh-TW':'暫無剩餘額度資料，等待下一次請求回寫','ja':'残量データはまだありません。次回のリクエストで書き戻されます','ko':'남은 할당량 데이터가 아직 없습니다. 다음 요청 시 기록됩니다','es':'Aún no hay datos de cuota restante; se escribirán tras la siguiente solicitud','fr':'Aucune donnée de quota restant pour le moment ; elle sera écrite après la prochaine requête','de':'Noch keine Daten zum Restkontingent; sie werden mit der nächsten Anfrage zurückgeschrieben','pt-BR':'Ainda não há dados de cota restante; serão gravados após a próxima solicitação','ru':'Данных об остатке квоты пока нет; они будут записаны после следующего запроса','ar':'لا توجد بيانات عن الحصة المتبقية بعد؛ ستُكتب بعد الطلب التالي'},
+  'Gateway System Logs': {'zh-CN':'网关底层系统日志','zh-TW':'閘道底層系統日誌','ja':'ゲートウェイシステムログ','ko':'게이트웨이 시스템 로그','es':'Registros del sistema de puerta de enlace','fr':'Journaux système de passerelle','de':'Gateway-Systemprotokolle','pt-BR':'Logs do sistema do gateway','ru':'Системные логи шлюза','ar':'سجلات نظام البوابة'},
+  'System Logs': {'zh-CN':'系统日志','zh-TW':'系統日誌','ja':'システムログ','ko':'시스템 로그','es':'Registros del sistema','fr':'Journaux système','de':'Systemprotokolle','pt-BR':'Logs do sistema','ru':'Системные логи','ar':'سجلات النظام'},
+  'All levels': {'zh-CN':'全部级别','zh-TW':'全部層級','ja':'すべてのレベル','ko':'모든 레벨','es':'Todos los niveles','fr':'Tous les niveaux','de':'Alle Stufen','pt-BR':'Todos os níveis','ru':'Все уровни','ar':'جميع المستويات'},
+  'Auto refresh': {'zh-CN':'自动刷新','zh-TW':'自動重新整理','ja':'自動更新','ko':'자동 새로고침','es':'Actualización automática','fr':'Actualisation automatique','de':'Autom. Aktualisierung','pt-BR':'Atualização automática','ru':'Автообновление','ar':'تحديث تلقائي'},
+  'Lock scroll': {'zh-CN':'滚动锁定','zh-TW':'滾動鎖定','ja':'スクロール固定','ko':'스크롤 고정','es':'Bloquear desplazamiento','fr':'Verrouiller le défilement','de':'Bildlauf sperren','pt-BR':'Bloquear rolagem','ru':'Фиксация прокрутки','ar':'قفل التمرير'},
+  'Done': {'zh-CN':'完成','zh-TW':'完成','ja':'完了','ko':'완료','es':'Hecho','fr':'Terminé','de':'Fertig','pt-BR':'Concluído','ru':'Готово','ar':'تم'},
 };
 function preferredLocale(){
   try{
@@ -931,6 +1194,8 @@ function preferredLocale(){
     if(stored==='en'&&localStorage.getItem(localeSelectionKey)==='1')return 'en';
     if(stored&&stored!=='en'&&SUPPORTED_LOCALES.includes(stored))return stored;
   }catch(e){}
+  const configured=window.M365_DEFAULT_LOCALE;
+  if(configured&&SUPPORTED_LOCALES.includes(configured))return configured;
   return 'zh-CN';
 }
 let currentLocale=preferredLocale();
@@ -953,6 +1218,14 @@ function translateDynamic(value,locale){
     m=value.match(/^Connection healthy: (.+)$/);if(m)return '连通正常：'+m[1];
     m=value.match(/^Finished: (\d+) succeeded, (\d+) failed, (\d+) rounds total\.$/);if(m)return '完成：成功 '+m[1]+' 个，失败 '+m[2]+' 个，共 '+m[3]+' 轮。';
   }else{
+    if(locale!=='en'){
+      let m=value.match(/^(\d+) requests$/);
+      if(m){const n=m[1];const t={'ja':n+' リクエスト','ko':n+'개 요청','es':n+' solicitudes','fr':n+' requêtes','de':n+' Anfragen','pt-BR':n+' solicitações','ru':n+' запросов','ar':n+' طلبًا'}[locale];if(t)return t;}
+      m=value.match(/^(\d+) requests today$/);
+      if(m){const n=m[1];const t={'ja':'今日 '+n+' リクエスト','ko':'오늘 '+n+'개 요청','es':n+' solicitudes hoy','fr':n+" requêtes aujourd'hui",'de':n+' Anfragen heute','pt-BR':n+' solicitações hoje','ru':n+' запросов сегодня','ar':n+' طلبًا اليوم'}[locale];if(t)return t;}
+      m=value.match(/^Hit rate (.+)$/);
+      if(m){const r=m[1];const t={'ja':'ヒット率 '+r,'ko':'적중률 '+r,'es':'Tasa de aciertos '+r,'fr':'Taux de hits '+r,'de':'Trefferquote '+r,'pt-BR':'Taxa de acertos '+r,'ru':'Частота попаданий '+r,'ar':'معدل الإصابات '+r}[locale];if(t)return t;}
+    }
     let m=value.match(/^已调用(\d+)次$/);if(m)return 'Called '+m[1]+' times';
     m=value.match(/^已呼叫(\d+)次$/);if(m)return 'Called '+m[1]+' times';
     m=value.match(/^调用(\d+)次限流$/);if(m)return 'Limited after '+m[1]+' calls';
@@ -1018,19 +1291,21 @@ function showNotice(msg,type='info'){
 }
 
 function showPage(p){
-  ['dashboard','usage','accounts','apikeys','conversations','proxies','modeltest','settings'].forEach(k=>{
-    $('page-'+k).style.display=k===p?'block':'none';
-    document.querySelector('[data-page="'+k+'"]')?.classList.toggle('active',k===p);
+  ['dashboard','usage','accounts','apikeys','conversations','proxies','modeltest','logs','settings'].forEach(k=>{
+    const el=$('page-'+k);
+    if(el) el.style.display=k===p?'block':'none';
+    document.querySelectorAll('[data-page="'+k+'"]').forEach(btn=>btn.classList.toggle('active',k===p));
   });
-  $('pageTitle').textContent=pages[p];
+  if($('pageTitle')) $('pageTitle').textContent=pages[p]||p;
   if(p==='dashboard'){loadStats();loadOnboarding();loadAccounts();}
-  if(p==='usage')loadUsage();
-  if(p==='accounts')loadAccounts();
-  if(p==='apikeys')loadKeys();
-  if(p==='conversations')loadConversations();
-  if(p==='proxies')loadProxies();
-  if(p==='modeltest')loadModelTest();
-  if(p==='settings')loadSettings();
+  else if(p==='usage')loadUsage();
+  else if(p==='accounts')loadAccounts();
+  else if(p==='apikeys')loadKeys();
+  else if(p==='conversations')loadConversations();
+  else if(p==='proxies')loadProxies();
+  else if(p==='modeltest')loadModelTest();
+  else if(p==='logs')loadLogsPage();
+  else if(p==='settings')loadSettings();
 }
 
 let onboardingHidden=false;
@@ -1480,13 +1755,112 @@ async function toggleKey(id,revoked){
 
 function openKeyModal(){$('keyModal').classList.add('open');$('keyResult').style.display='none';$('keyName').value='default';setTimeout(()=>$('keyName').focus(),50);}
 function closeKeyModal(){$('keyModal').classList.remove('open');}
-async function copyKey(){try{await navigator.clipboard.writeText($('keyValue').value);showNotice('已复制','success');}catch(e){}}
+async function copyKey(){safeCopy($('keyValue').value);}
 async function createKey(e){
   e.preventDefault();
+  const btn = document.querySelector('#keyModal button[type="submit"]');
   try{
+    if(btn){ btn.disabled = true; btn.textContent = 'Creating...'; }
     const d=await api('/api/admin/keys',{method:'POST',body:JSON.stringify({name:$('keyName').value||'default'})});
     $('keyValue').value=d.key;$('keyResult').style.display='block';copyKey();loadKeys();
-  }catch(e){showNotice(e.message,'error');}
+    showNotice('API Key 创建成功并已自动复制到剪贴板！','success');
+    if(btn){ btn.disabled = true; btn.textContent = '已创建 Key'; }
+  }catch(e){
+    showNotice(e.message,'error');
+    if(btn){ btn.disabled = false; btn.textContent = 'Create'; }
+  }
+}
+
+let _sysLogsCache = [], _sysLogLastID = 0, _sysLogTimer = null;
+
+async function loadLogsPage(){
+  fetchSysLogs(true);
+  startSysLogAutoRefresh();
+}
+
+function startSysLogAutoRefresh(){
+  if(_sysLogTimer) return;
+  _sysLogTimer = setInterval(()=>{
+    const isVisible = document.visibilityState === 'visible';
+    const isLogsActive = document.getElementById('page-logs')?.style.display !== 'none';
+    const isChecked = $('sysLogAutoRefresh')?.checked;
+    if(isVisible && isLogsActive && isChecked){
+      fetchSysLogs(false);
+    }
+  }, 1500);
+}
+
+function toggleSysLogAutoRefresh(){
+  if($('sysLogAutoRefresh')?.checked){
+    startSysLogAutoRefresh();
+  } else if(_sysLogTimer) {
+    clearInterval(_sysLogTimer);
+    _sysLogTimer = null;
+  }
+}
+
+async function fetchSysLogs(reset=false){
+  try{
+    if(reset){
+      _sysLogLastID = 0;
+      _sysLogsCache = [];
+    }
+    const d = await api('/api/admin/syslogs?since_id=' + _sysLogLastID + '&limit=500');
+    if(d.max_id) _sysLogLastID = d.max_id;
+    if(d.logs && d.logs.length){
+      _sysLogsCache = _sysLogsCache.concat(d.logs);
+      if(_sysLogsCache.length > 2000) _sysLogsCache = _sysLogsCache.slice(_sysLogsCache.length - 2000);
+    }
+    renderSysLogs();
+  }catch(e){
+    const con = $('sysLogConsole');
+    if(con && !_sysLogsCache.length) con.innerHTML = `<div style="color:#f87171">获取日志失败: ${esc(e.message)}</div>`;
+  }
+}
+
+function renderSysLogs(){
+  const con = $('sysLogConsole');
+  if(!con) return;
+  const searchQuery = ($('sysLogSearch')?.value || '').trim().toLowerCase();
+  const selectedLevel = $('sysLogLevel')?.value || 'ALL';
+
+  const list = _sysLogsCache.filter(x => {
+    if(selectedLevel !== 'ALL' && x.level !== selectedLevel) return false;
+    if(searchQuery && !x.message.toLowerCase().includes(searchQuery)) return false;
+    return true;
+  });
+
+  if(!list.length){
+    con.innerHTML = '<div style="color:#64748b;font-style:italic">暂无符合条件的控制台日志</div>';
+    return;
+  }
+
+  con.innerHTML = list.map(x => {
+    const t = new Date(x.time).toLocaleTimeString();
+    let levelColor = '#34d399';
+    if(x.level === 'ERROR') levelColor = '#f87171';
+    else if(x.level === 'WARN') levelColor = '#fbbf24';
+    else if(x.level === 'DEBUG') levelColor = '#94a3b8';
+
+    return `<div style="margin-bottom:3px;word-break:break-all"><span style="color:#64748b;margin-right:8px">[${t}]</span><span style="color:${levelColor};font-weight:700;margin-right:8px">[${x.level}]</span><span style="color:#f1f5f9">${esc(x.message)}</span></div>`;
+  }).join('');
+
+  if($('sysLogAutoScroll')?.checked){
+    con.scrollTop = con.scrollHeight;
+  }
+}
+
+async function clearSysLogs(){
+  if(!confirm('确定清空网关底层日志缓冲区？')) return;
+  try{
+    await api('/api/admin/syslogs/clear', {method: 'POST'});
+    _sysLogsCache = [];
+    _sysLogLastID = 0;
+    renderSysLogs();
+    showNotice('底层日志已清空', 'success');
+  }catch(e){
+    showNotice(e.message, 'error');
+  }
 }
 async function revokeKey(id){if(!confirm('确定删除此密钥？'))return;try{await api('/api/admin/keys?id='+id,{method:'DELETE'});loadKeys();}catch(e){showNotice(e.message,'error');}}
 
@@ -1641,13 +2015,13 @@ async function openUseKey(id){
 function closeUseKey(){$('useKeyModal').classList.remove('open');}
 function renderUkeTabs(){
   $('useKeyClients').innerHTML=ukeClients.map(c=>`<button class="uke-tab ${c.id===ukeClient?'active':''}" onclick="ukeClient='${c.id}';renderUkeTabs();renderUkeFiles()"><i data-lucide="${c.id==='codex'?'terminal':c.id==='curl'?'square-terminal':c.id==='claude'?'sparkles':'braces'}"></i>${c.label}</button>`).join('');
-  $('useKeyOs').innerHTML=ukeOs.map(o=>`<button class="uke-tab ${o.id===ukeOsSel?'active':''}" onclick="ukeOsSel='${o.id}';renderUkeFiles()">${o.label}</button>`).join('');
+  $('useKeyOs').innerHTML=ukeOs.map(o=>`<button class="uke-tab ${o.id===ukeOsSel?'active':''}" onclick="ukeOsSel='${o.id}';renderUkeTabs();renderUkeFiles()">${o.label}</button>`).join('');
   try{lucide.createIcons();}catch(e){}
 }
 function esc(s){return String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
 function ukeFile(path,content){
   return `<div class="uke-file">
-    <div class="uke-file-head"><code>${esc(path)}</code><button class="btn btn-sm" onclick="navigator.clipboard.writeText(this.closest('.uke-file').querySelector('pre').textContent.trim());showNotice('已复制','success')">Copy</button></div>
+    <div class="uke-file-head"><code>${esc(path)}</code><button class="btn btn-sm" onclick="safeCopy(this.closest('.uke-file').querySelector('pre').textContent.trim())">Copy</button></div>
     <pre>${esc(content)}</pre>
   </div>`;
 }
@@ -1717,8 +2091,8 @@ goals = true`;
 }
 async function copyUseKey(){
   const v=$('useKeyVal').value;
-  if(!v){showNotice('完整密钥不可用','error');return;}
-  try{await navigator.clipboard.writeText(v);showNotice('已复制','success');}catch(e){}
+  if(!v){showNotice('请输入或粘贴密钥后再复制','error');return;}
+  safeCopy(v);
 }
 
 async function loadConversations(){

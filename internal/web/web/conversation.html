@@ -104,6 +104,79 @@ pre{margin:0;padding:14px;white-space:pre-wrap;overflow-wrap:anywhere;word-break
 <script>
 const state={data:null,view:'conversation'};
 const $=id=>document.getElementById(id);
+const SUPPORTED_LOCALES=['en','zh-CN','zh-TW','ja','ko','es','fr','de','pt-BR','ru','ar'];
+const localeStorageKey='m365_locale';
+const localeSelectionKey='m365_locale_selected';
+const localeText={
+  'Back': {'zh-CN':'返回','zh-TW':'返回','ja':'戻る','ko':'뒤로','es':'Volver','fr':'Retour','de':'Zurück','pt-BR':'Voltar','ru':'Назад','ar':'رجوع'},
+  'View': {'zh-CN':'视图','zh-TW':'檢視','ja':'表示','ko':'보기','es':'Ver','fr':'Afficher','de':'Ansicht','pt-BR':'Ver','ru':'Вид','ar':'عرض'},
+  'Conversation': {'zh-CN':'对话','zh-TW':'對話','ja':'会話','ko':'대화','es':'Conversación','fr':'Conversation','de':'Unterhaltung','pt-BR':'Conversa','ru':'Разговор','ar':'محادثة'},
+  'Copy JSON': {'zh-CN':'复制 JSON','zh-TW':'複製 JSON','ja':'JSON をコピー','ko':'JSON 복사','es':'Copiar JSON','fr':'Copier JSON','de':'JSON kopieren','pt-BR':'Copiar JSON','ru':'Копировать JSON','ar':'نسخ JSON'},
+  'Refresh': {'zh-CN':'刷新','zh-TW':'重新整理','ja':'更新','ko':'새로고침','es':'Actualizar','fr':'Actualiser','de':'Aktualisieren','pt-BR':'Atualizar','ru':'Обновить','ar':'تحديث'},
+  'Loading...': {'zh-CN':'加载中...','zh-TW':'載入中...','ja':'読み込み中...','ko':'로딩 중...','es':'Cargando...','fr':'Chargement...','de':'Wird geladen...','pt-BR':'Carregando...','ru':'Загрузка...','ar':'جارٍ التحميل...'},
+  'Conversation detail': {'zh-CN':'对话详情','zh-TW':'對話詳情','ja':'会話詳細','ko':'대화 상세','es':'Detalle de la conversación','fr':'Détail de la conversation','de':'Unterhaltungsdetails','pt-BR':'Detalhe da conversa','ru':'Детали разговора','ar':'تفاصيل المحادثة'},
+  'Conversation metadata': {'zh-CN':'会话元数据','zh-TW':'會話中繼資料','ja':'セッションメタデータ','ko':'대화 메타데이터','es':'Metadatos de la conversación','fr':'Métadonnées de la conversation','de':'Unterhaltungsmetadaten','pt-BR':'Metadados da conversa','ru':'Метаданные разговора','ar':'بيانات المحادثة'},
+  'Messages': {'zh-CN':'消息数','zh-TW':'訊息數','ja':'メッセージ数','ko':'메시지 수','es':'Mensajes','fr':'Messages','de':'Nachrichten','pt-BR':'Mensagens','ru':'Сообщения','ar':'الرسائل'},
+  'Accounts': {'zh-CN':'账号','zh-TW':'帳號','ja':'アカウント','ko':'계정','es':'Cuentas','fr':'Comptes','de':'Konten','pt-BR':'Contas','ru':'Аккаунты','ar':'الحسابات'},
+  'Created': {'zh-CN':'创建时间','zh-TW':'建立時間','ja':'作成日時','ko':'생성 시간','es':'Creado','fr':'Créé','de':'Erstellt','pt-BR':'Criado','ru':'Создано','ar':'تاريخ الإنشاء'},
+  'Last updated': {'zh-CN':'最近更新','zh-TW':'最近更新','ja':'最終更新','ko':'최근 업데이트','es':'Última actualización','fr':'Dernière mise à jour','de':'Zuletzt aktualisiert','pt-BR':'Última atualização','ru':'Последнее обновление','ar':'آخر تحديث'},
+  'Raw JSON': {'zh-CN':'原始 JSON','zh-TW':'原始 JSON','ja':'生の JSON','ko':'원본 JSON','es':'JSON sin procesar','fr':'JSON brut','de':'Rohes JSON','pt-BR':'JSON bruto','ru':'Исходный JSON','ar':'JSON الخام'},
+  'User': {'zh-CN':'用户','zh-TW':'使用者','ja':'ユーザー','ko':'사용자','es':'Usuario','fr':'Utilisateur','de':'Benutzer','pt-BR':'Usuário','ru':'Пользователь','ar':'المستخدم'},
+  'Assistant': {'zh-CN':'助手','zh-TW':'助理','ja':'アシスタント','ko':'어시스턴트','es':'Asistente','fr':'Assistant','de':'Assistent','pt-BR':'Assistente','ru':'Ассистент','ar':'المساعد'},
+  'Tool result': {'zh-CN':'工具结果','zh-TW':'工具結果','ja':'ツール結果','ko':'도구 결과','es':'Resultado de la herramienta','fr':'Résultat de l\'outil','de':'Tool-Ergebnis','pt-BR':'Resultado da ferramenta','ru':'Результат инструмента','ar':'نتيجة الأداة'},
+  'System': {'zh-CN':'系统','zh-TW':'系統','ja':'システム','ko':'시스템','es':'Sistema','fr':'Système','de':'System','pt-BR':'Sistema','ru':'Система','ar':'النظام'},
+  'Developer': {'zh-CN':'开发者','zh-TW':'開發者','ja':'開発者','ko':'개발자','es':'Desarrollador','fr':'Développeur','de':'Entwickler','pt-BR':'Desenvolvedor','ru':'Разработчик','ar':'المطور'},
+  'Message': {'zh-CN':'消息','zh-TW':'訊息','ja':'メッセージ','ko':'메시지','es':'Mensaje','fr':'Message','de':'Nachricht','pt-BR':'Mensagem','ru':'Сообщение','ar':'رسالة'},
+  'Empty content': {'zh-CN':'空内容','zh-TW':'空內容','ja':'空の内容','ko':'내용 없음','es':'Contenido vacío','fr':'Contenu vide','de':'Leerer Inhalt','pt-BR':'Conteúdo vazio','ru':'Пустое содержимое','ar':'محتوى فارغ'},
+  'Image': {'zh-CN':'图片','zh-TW':'圖片','ja':'画像','ko':'이미지','es':'Imagen','fr':'Image','de':'Bild','pt-BR':'Imagem','ru':'Изображение','ar':'صورة'},
+  'Reasoning': {'zh-CN':'推理','zh-TW':'推理','ja':'推論','ko':'추론','es':'Razonamiento','fr':'Raisonnement','de':'Denken','pt-BR':'Raciocínio','ru':'Рассуждение','ar':'استدلال'},
+  'Unnamed conversation': {'zh-CN':'未命名对话','zh-TW':'未命名對話','ja':'無題の会話','ko':'이름 없는 대화','es':'Conversación sin nombre','fr':'Conversation sans nom','de':'Unbenannte Unterhaltung','pt-BR':'Conversa sem nome','ru':'Разговор без названия','ar':'محادثة بدون اسم'},
+  'No messages yet': {'zh-CN':'暂无消息','zh-TW':'暫無訊息','ja':'メッセージはありません','ko':'메시지 없음','es':'Aún no hay mensajes','fr':'Aucun message pour l\'instant','de':'Noch keine Nachrichten','pt-BR':'Nenhuma mensagem ainda','ru':'Сообщений пока нет','ar':'لا توجد رسائل بعد'},
+  'Missing conversation ID': {'zh-CN':'缺少会话 ID','zh-TW':'缺少會話 ID','ja':'会話 ID がありません','ko':'대화 ID가 없습니다','es':'Falta el ID de la conversación','fr':'ID de conversation manquant','de':'Unterhaltungs-ID fehlt','pt-BR':'ID da conversa ausente','ru':'Отсутствует ID разговора','ar':'معرف المحادثة مفقود'},
+  'Failed to load': {'zh-CN':'加载失败','zh-TW':'載入失敗','ja':'読み込みに失敗しました','ko':'로딩 실패','es':'Error al cargar','fr':'Échec du chargement','de':'Laden fehlgeschlagen','pt-BR':'Falha ao carregar','ru':'Не удалось загрузить','ar':'فشل التحميل'},
+  'conversation history is not available': {'zh-CN':'对话历史不可用','zh-TW':'對話歷史不可用','ja':'会話履歴を利用できません','ko':'대화 기록을 사용할 수 없습니다','es':'El historial de conversación no está disponible','fr':'L\'historique de conversation n\'est pas disponible','de':'Konversationsverlauf ist nicht verfügbar','pt-BR':'O histórico da conversa não está disponível','ru':'История разговора недоступна','ar':'سجل المحادثة غير متاح'},
+  'conversation id is required': {'zh-CN':'必须提供对话 ID','zh-TW':'必須提供對話 ID','ja':'会話 ID が必要です','ko':'대화 ID가 필요합니다','es':'Se requiere el ID de conversación','fr':'L\'ID de conversation est requis','de':'Konversations-ID ist erforderlich','pt-BR':'O ID da conversa é necessário','ru':'Требуется ID разговора','ar':'معرف المحادثة مطلوب'},
+  'session not found': {'zh-CN':'会话未找到','zh-TW':'工作階段未找到','ja':'セッションが見つかりません','ko':'세션을 찾을 수 없습니다','es':'Sesión no encontrada','fr':'Session introuvable','de':'Sitzung nicht gefunden','pt-BR':'Sessão não encontrada','ru':'Сессия не найдена','ar':'الجلسة غير موجودة'},
+  'administrator login required': {'zh-CN':'需要管理员登录','zh-TW':'需要管理員登入','ja':'管理者ログインが必要です','ko':'관리자 로그인이 필요합니다','es':'Se requiere inicio de sesión de administrador','fr':'Connexion administrateur requise','de':'Administrator-Anmeldung erforderlich','pt-BR':'Login de administrador necessário','ru':'Требуется вход администратора','ar':'مطلوب تسجيل دخول المسؤول'}
+};
+function preferredLocale(){
+  try{
+    const stored=localStorage.getItem(localeStorageKey);
+    if(stored==='en'&&localStorage.getItem(localeSelectionKey)==='1')return 'en';
+    if(stored&&stored!=='en'&&SUPPORTED_LOCALES.includes(stored))return stored;
+  }catch(e){}
+  const configured=window.M365_DEFAULT_LOCALE;
+  if(configured&&SUPPORTED_LOCALES.includes(configured))return configured;
+  return 'zh-CN';
+}
+let currentLocale=preferredLocale();
+function localeReverse(){const out={};Object.entries(localeText).forEach(([en,v])=>{Object.values(v).forEach(t=>{if(t&&!out[t])out[t]=en;});});return out;}
+const localeTextReverse=localeReverse();
+function translateText(value){
+  const trimmed=String(value).trim();
+  if(!trimmed)return value;
+  const entry=localeText[trimmed]||localeText[localeTextReverse[trimmed]];
+  const translated=(entry&&entry[currentLocale])||(currentLocale==='en'?localeTextReverse[trimmed]:null);
+  if(!translated||translated===trimmed)return value;
+  return String(value).replace(trimmed,translated);
+}
+let localeObserver=null;
+function translatePage(){
+  const walker=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT);
+  const nodes=[];let node;
+  while(node=walker.nextNode()){if(!node.parentElement?.closest('script,style,pre,code,textarea'))nodes.push(node);}
+  nodes.forEach(n=>{const translated=translateText(n.nodeValue);if(translated!==n.nodeValue)n.nodeValue=translated;});
+  document.querySelectorAll('[placeholder],[title],[aria-label]').forEach(el=>['placeholder','title','aria-label'].forEach(attr=>{if(el.hasAttribute(attr))el.setAttribute(attr,translateText(el.getAttribute(attr)));}));
+  document.documentElement.lang=currentLocale;
+  document.title=translateText('Conversation detail')+' - M365 Copilot2API';
+}
+function applyLocale(locale){
+  if(!SUPPORTED_LOCALES.includes(locale))locale='zh-CN';
+  currentLocale=locale;
+  translatePage();
+  if(!localeObserver){localeObserver=new MutationObserver(()=>translatePage());localeObserver.observe(document.body,{childList:true,subtree:true,characterData:true});}
+}
+applyLocale(currentLocale);
 
 function escapeHTML(value){return String(value??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
 function formatDate(value){if(!value)return '-';const date=new Date(value);return Number.isNaN(date.getTime())?'-':date.toLocaleString();}

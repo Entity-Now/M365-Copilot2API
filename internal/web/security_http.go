@@ -1,15 +1,56 @@
 package web
 
 import (
+	"bytes"
 	"embed"
+	"io"
 	"io/fs"
 	"net/http"
+	"os"
+	"strconv"
+	"strings"
 )
 
 //go:embed all:web
 var webFS embed.FS
 
 var webContent http.FileSystem
+
+// supportedLocales mirrors SUPPORTED_LOCALES in the console pages.
+var supportedLocales = map[string]bool{
+	"en": true, "zh-CN": true, "zh-TW": true, "ja": true, "ko": true,
+	"es": true, "fr": true, "de": true, "pt-BR": true, "ru": true, "ar": true,
+}
+
+// defaultLocaleSnippet returns an inline <script> that overrides the console
+// default language (window.M365_DEFAULT_LOCALE) based on M365_DEFAULT_LOCALE.
+// Values are validated against a whitelist so a malformed env var can never
+// inject markup. Empty when unset, invalid, or equal to the built-in zh-CN.
+func defaultLocaleSnippet() string {
+	v := strings.TrimSpace(os.Getenv("M365_DEFAULT_LOCALE"))
+	if v == "" || v == "zh-CN" || !supportedLocales[v] {
+		return ""
+	}
+	return "<script>window.M365_DEFAULT_LOCALE=" + strconv.Quote(v) + ";</script>"
+}
+
+// pageWithDefaultLocale injects the locale snippet right after <head>.
+func pageWithDefaultLocale(page []byte) []byte {
+	snippet := defaultLocaleSnippet()
+	if snippet == "" {
+		return page
+	}
+	i := bytes.Index(page, []byte("<head>"))
+	if i < 0 {
+		return page
+	}
+	i += len("<head>")
+	out := make([]byte, 0, len(page)+len(snippet))
+	out = append(out, page[:i]...)
+	out = append(out, snippet...)
+	out = append(out, page[i:]...)
+	return out
+}
 
 func init() {
 	sub, err := fs.Sub(webFS, "web")
@@ -59,6 +100,11 @@ func (s *Server) rootPage(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIError(w, http.StatusInternalServerError, "server_error", "web interface unavailable")
 		return
 	}
+	body, err := io.ReadAll(f)
+	if err != nil {
+		writeOpenAIError(w, http.StatusInternalServerError, "server_error", "web interface unavailable")
+		return
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	http.ServeContent(w, r, name, st.ModTime(), f)
+	http.ServeContent(w, r, name, st.ModTime(), bytes.NewReader(pageWithDefaultLocale(body)))
 }
