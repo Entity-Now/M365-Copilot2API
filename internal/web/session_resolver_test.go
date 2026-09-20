@@ -63,6 +63,48 @@ func TestResolveDoesNotMatchAcrossIdentity(t *testing.T) {
 	}
 }
 
+// TestResolveDoesNotMatchSuffixCrossTalk verifies issue #78: two conversations
+// that share some middle or suffix turns (e.g. "how to sort" -> "use sort()")
+// but have different prefixes (e.g. different system prompts or early turns)
+// must NEVER match by suffix and leak/switch conversations or drop system prompts.
+func TestResolveDoesNotMatchSuffixCrossTalk(t *testing.T) {
+	t.Setenv("M365_SESSION_CACHE", filepath.Join(t.TempDir(), "sessions.json"))
+	t.Setenv("M365_CONVERSATION_CACHE", filepath.Join(t.TempDir(), "conversations.json"))
+	t.Setenv("M365_USER_SESSION_CACHE", filepath.Join(t.TempDir(), "users.json"))
+	sr := openSessionResolver()
+
+	reqA := resolverTestRequest("203.0.113.10", "client-a", "user1")
+	sr.Bind("", "conv-python", "acc1",
+		&oaiReq{
+			Messages: []oaiMsg{
+				{Role: "system", Content: "You are a Python expert."},
+				{Role: "user", Content: "how to sort"},
+				{Role: "assistant", Content: "use sort()"},
+			},
+		},
+		"",
+		reqA)
+
+	// Conversation B shares the suffix turns ("how to sort" -> "use sort()"),
+	// but has a completely different system prompt.
+	// It must NOT match conv-python and must start a clean new conversation.
+	reqB := resolverTestRequest("203.0.113.10", "client-a", "user1")
+	res := sr.Resolve(reqB,
+		&oaiReq{
+			Messages: []oaiMsg{
+				{Role: "system", Content: "You are a Go expert."},
+				{Role: "user", Content: "how to sort"},
+				{Role: "assistant", Content: "use sort()"},
+				{Role: "user", Content: "what about maps"},
+			},
+		})
+
+	if !res.IsNew {
+		t.Fatalf("conversation with different prefix matched %s (%s); should be new to prevent #78 cross-talk",
+			res.ConversationID, res.MatchedBy)
+	}
+}
+
 func TestResolveSingleMessageReusesForSameUser(t *testing.T) {
 	t.Setenv("M365_SESSION_CACHE", filepath.Join(t.TempDir(), "sessions.json"))
 	sr := openSessionResolver()

@@ -119,6 +119,11 @@ func TestNonPrefixSnapshotDoesNotDuplicateStreamedText(t *testing.T) {
 		_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"type":1,"target":"update","arguments":[{"messages":[{"author":"bot","text":"Hello there! Revised text."}]}]}`+"\x1e"))
 		_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"type":2,"item":{"result":{"value":"Success","message":"Hello world! Draft one."}}}`+"\x1e"))
 		_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"type":3,"invocationId":"0"}`+"\x1e"))
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
 	}))
 	defer server.Close()
 

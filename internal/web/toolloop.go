@@ -40,6 +40,18 @@ func allowedToolNames(tools []map[string]any) map[string]bool {
 	return out
 }
 
+func declaredToolNames(tools []map[string]any) []string {
+	names := make([]string, 0, len(tools))
+	for _, t := range tools {
+		if f, ok := t["function"].(map[string]any); ok {
+			if n, ok := f["name"].(string); ok && n != "" {
+				names = append(names, n)
+			}
+		}
+	}
+	return names
+}
+
 type rejectedToolCall struct {
 	Name   string
 	Reason string

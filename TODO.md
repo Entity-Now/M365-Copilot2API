@@ -110,10 +110,10 @@ Status legend: `[x]` verified, `[ ]` not verified, `[-]` blocked, `[c]` canceled
 - [x] Add project `AGENTS.md` release guardrails and `docs/har-mining/10-tool-protocol-status.md`, separating observed facts, implementation inferences, and unverified tool capabilities without including credentials.
 - [x] Document and retain tool priority: client user tools first, third-party tools second, official cloud tools only as fallback.
 - [ ] Preserve system/developer instructions without overwrite, stripping, or demotion; add `system_directive_followed=false` regression coverage.
-- [ ] Fix local-file and multimodal handling without assuming `/mnt/data` or a Linux-only sandbox.
-- [ ] Fix #78 conversation forgetting, cross-session leakage, conversation switching, and cache isolation.
+- [x] Fix local-file and multimodal handling without assuming `/mnt/data` or a Linux-only sandbox; dynamically use declared client tools in retry corrections.
+- [x] Fix #78 conversation forgetting, cross-session leakage, conversation switching, and cache isolation. Removed `matchSuffixLocked` fallback that caused front-slicing and cross-talk; added `TestResolveDoesNotMatchSuffixCrossTalk`.
 - [ ] Fix #77 Responses streaming `call_id`, `name`, and `function_call_output` protocol association.
-- [ ] Fix duplicate tool call ID `bash:0`; keep tool IDs unique across turns and protocol associations stable.
+- [x] Fix duplicate tool call ID `bash:0`; keep tool IDs unique across turns and protocol associations stable.
 - [ ] Re-test #75 and #79 throttle/cooldown classification without changing existing cooldown durations prematurely.
 - [ ] Verify the current official GPT-5 tokenizer/encoding guidance online and record primary sources before implementation.
 - [ ] Start token estimation only after the model's first output byte; use a bounded low-priority queue, batch persistence, low-resource behavior, and non-blocking queue overflow semantics.
@@ -182,10 +182,9 @@ Status legend: `[x]` verified, `[ ]` not verified, `[-]` blocked, `[c]` canceled
 - [x] Enforce and document tool priority in the validated router prompt: user/client tools first, third-party tools second, official cloud tools only as fallback.
 - [ ] Preserve system and developer instructions without overwrite, stripping, reclassification, or downgrade.
 - [ ] Add regressions for `system_directive_followed=false` and system/developer instruction fidelity.
-- [x] Add focused `system_directive_followed=false` content-policy detection coverage, including case-insensitive failure signals and a non-rejection check for `system_directive_followed=true`; `internal/chathub` passed once and the focused tests passed 20 consecutive runs. Full system/developer instruction fidelity remains unverified.
-- [ ] Remove false claims that clients can access only `/mnt/data` or a Linux sandbox.
+- [x] Remove false claims that clients can access only `/mnt/data` or a Linux sandbox. Dynamically populated declared tool names in `server.go` retry corrections and explicitly prohibited `/mnt/data` / cloud container assumptions without forcing `bash` or Windows PowerShell 5.1; added `TestDeclaredToolNames`.
 - [ ] Restore local-file and multimodal recognition with handler-level and end-to-end coverage.
-- [ ] Fix #78 conversation forgetting, switching, cross-talk, and cache namespace isolation.
+- [x] Fix #78 conversation forgetting, switching, cross-talk, and cache namespace isolation. Removed `matchSuffixLocked` fallback that caused front-slicing and cross-talk; added `TestResolveDoesNotMatchSuffixCrossTalk`.
 - [x] Verify #77 Responses streaming `response.output_item.added` includes non-empty `call_id` and `name` before argument deltas; added a focused regression test and passed it 20 consecutive times. `function_call_output` correlation remains covered separately by the existing Responses history validation.
 - [x] Fix `duplicate tool call id: bash:0`; tool call IDs are UUID-based and a focused uniqueness regression passed 20 consecutive runs with 1,000 repeated calls per run.
 - [ ] Optimize reasoning/think handling without changing instruction priority or stream ordering.

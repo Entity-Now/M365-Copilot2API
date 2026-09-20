@@ -48,3 +48,14 @@ func TestValidateDetectedToolCallsAcceptsDeclaredCall(t *testing.T) {
 		t.Fatalf("call was not normalized: %#v", valid[0])
 	}
 }
+
+func TestDeclaredToolNames(t *testing.T) {
+	tools := []map[string]any{
+		{"type": "function", "function": map[string]any{"name": "fetch_data"}},
+		{"type": "function", "function": map[string]any{"name": "write_file"}},
+	}
+	names := declaredToolNames(tools)
+	if len(names) != 2 || names[0] != "fetch_data" || names[1] != "write_file" {
+		t.Fatalf("unexpected declared tool names: %v", names)
+	}
+}

@@ -260,74 +260,7 @@ func (sr *sessionResolver) Resolve(r *http.Request, body *oaiReq) ResolveResult 
 		}
 	}
 
-	// As a weaker fallback, reuse a conversation whose history shares a strong
-	// suffix with a locally truncated request. The incremental boundary is unknown.
-	suffixID, suffixN := sr.matchSuffixLocked(tenant, ipFinger, body.Messages)
-	if suffixID != "" {
-		sess := sr.sessions[suffixID]
-		sess.LastUsedAt = time.Now().UTC()
-		sr.sessions[suffixID] = sess
-		sr.persist.markDirty()
-		return ResolveResult{
-			SessionID:      sess.SessionID,
-			ConversationID: sess.ConversationID,
-			AccountID:      sess.AccountID,
-			MatchedBy:      fmt.Sprintf("context_suffix_%d", suffixN),
-			IsNew:          false,
-			HistoryLen:     suffixN,
-		}
-	}
-
 	return ResolveResult{IsNew: true}
-}
-
-func (sr *sessionResolver) matchSuffixLocked(tenant, ipFinger string, messages []oaiMsg) (string, int) {
-	if len(messages) < 2 {
-		return "", 0
-	}
-	type match struct {
-		id     string
-		n      int
-		recent time.Time
-	}
-	best := match{}
-	minSuffix := 2
-	for id, sess := range sr.sessions {
-		if time.Since(sess.LastUsedAt) > sr.contextTTL {
-			continue
-		}
-		if sess.Tenant != tenant {
-			continue
-		}
-		if sess.IPFingerprint != ipFinger {
-			continue
-		}
-		hist := sess.ContextHistory
-		if len(hist) < minSuffix {
-			continue
-		}
-		n := suffixMatchLen(hist, messages)
-		if n >= minSuffix && (n > best.n || (n == best.n && sess.LastUsedAt.After(best.recent))) {
-			best = match{id: id, n: n, recent: sess.LastUsedAt}
-		}
-	}
-	return best.id, best.n
-}
-
-func suffixMatchLen(hist, msgs []oaiMsg) int {
-	maxN := len(hist)
-	if maxN > len(msgs) {
-		maxN = len(msgs)
-	}
-	n := 0
-	for i := 1; i <= maxN; i++ {
-		if messagesEqual(hist[len(hist)-i], msgs[len(msgs)-i]) {
-			n = i
-		} else {
-			break
-		}
-	}
-	return n
 }
 
 // matchContextLocked returns the most recent conversation with the longest
