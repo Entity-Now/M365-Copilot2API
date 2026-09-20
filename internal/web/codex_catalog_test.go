@@ -177,6 +177,14 @@ func TestReasoningEffortRouting(t *testing.T) {
 		{"gpt-5.5", "low", "Gpt_5_5_Chat"},
 		{"gpt-5.5", "medium", "Gpt_5_5_Reasoning"},
 		{"gpt-5.6-reasoning", "none", "Gpt_5_6_Reasoning"},
+		{"gpt-5.6-sol", "none", "Gpt_5_6_Reasoning"},
+		{"gpt-5.6-sol", "medium", "Gpt_5_6_Reasoning"},
+		{"gpt-5.6", "medium", "Gpt_5_6_Reasoning"},
+		{"gpt-image-2", "", "Magic"},
+		{"gpt-image-2", "none", "Magic"},
+		{"gpt-image-2", "medium", "Magic"},
+		{"gpt-image-2", "high", "Magic"},
+		{"dall-e-3", "medium", "Magic"},
 	}
 	for _, tc := range cases {
 		got, err := reasoningTone(tc.model, tc.effort)
@@ -189,6 +197,17 @@ func TestReasoningEffortRouting(t *testing.T) {
 	}
 	if _, err := reasoningTone("gpt-99-invented", "low"); err == nil || !strings.Contains(err.Error(), "unknown or unsupported chat model") {
 		t.Fatalf("unknown model error=%v", err)
+	}
+}
+
+func TestSupportedChatModels(t *testing.T) {
+	for _, m := range []string{"gpt-image-2", "image-2", "dall-e-3", "gpt-5.6-sol", "gpt-5.6", "gpt-5.6-reasoning"} {
+		if !supportedChatModel(m) {
+			t.Fatalf("expected model %q to be supported", m)
+		}
+	}
+	if supportedChatModel("gpt-99-invented") {
+		t.Fatal("expected gpt-99-invented to not be supported")
 	}
 }
 

@@ -68,7 +68,7 @@ var gatewayModels = []modelSpec{
 	{ID: "gpt-5.5", Owner: "microsoft-365", Tools: true},
 	{ID: "gpt-5.5-reasoning", Owner: "microsoft-365", Tools: true},
 	{ID: "gpt-5.6-reasoning", Owner: "microsoft-365", Tools: true},
-	{ID: "gpt-image-2", Owner: "microsoft-365", DisplayName: "GPT Image 2"},
+	{ID: "gpt-image-2", Owner: "microsoft-365", DisplayName: "GPT Image 2", Tools: true},
 	{ID: "claude-sonnet", Owner: "anthropic-via-microsoft-365", Tools: true},
 	{ID: "claude-sonnet-reasoning", Owner: "anthropic-via-microsoft-365", Tools: true},
 }
@@ -187,6 +187,13 @@ func supportedChatModel(model string) bool {
 	if _, ok := configuredModelTone(model, currentSettings().ModelMappings); ok {
 		return true
 	}
+	if isImageModel(model) {
+		return true
+	}
+	switch strings.ToLower(model) {
+	case "gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna":
+		return true
+	}
 	for _, spec := range gatewayModels {
 		if spec.Tools && strings.EqualFold(spec.ID, model) {
 			return true
@@ -259,6 +266,9 @@ func reasoningTone(model, effort string) (string, error) {
 		return tone, nil
 	}
 	base := modelTone(model)
+	if isImageModel(model) {
+		return base, nil
+	}
 	// Explicit reasoning aliases are never silently downgraded by a generic client default.
 	if strings.Contains(strings.ToLower(model), "reasoning") {
 		return base, nil
@@ -277,7 +287,7 @@ func reasoningTone(model, effort string) (string, error) {
 		return "Gpt_5_4_Reasoning", nil
 	case "gpt-5.5":
 		return "Gpt_5_5_Reasoning", nil
-	case "gpt-5.6":
+	case "gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna":
 		return "Gpt_5_6_Reasoning", nil
 	default:
 		return "Gpt_5_5_Reasoning", nil

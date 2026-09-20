@@ -1441,7 +1441,7 @@ func modelTone(model string) string {
 		return "Gpt_5_5_Chat"
 	case "gpt-5.5-reasoning":
 		return "Gpt_5_5_Reasoning"
-	case "gpt-5.6-reasoning":
+	case "gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.6-reasoning":
 		return "Gpt_5_6_Reasoning"
 	case "claude", "claude-sonnet":
 		return "Claude_Sonnet"

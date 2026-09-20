@@ -31,6 +31,7 @@ var configurableCodexModels = []string{
 	"gpt-5.4",
 	"gpt-5.5",
 	"gpt-5.6-reasoning",
+	"gpt-5.6-sol",
 }
 
 type runtimeSettings struct {
