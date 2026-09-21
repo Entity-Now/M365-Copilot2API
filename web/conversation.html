@@ -466,7 +466,7 @@ h1{margin:6px 0 0;font-size:22px;line-height:1.35;font-weight:700;overflow-wrap:
 </main>
 <div id="toast" class="toast"></div>
 <script>
-const state={data:null,view:'conversation',searchQuery:''};
+const state={data:null,view:'conversation',searchQuery:'',unflattenedMessages:[]};
 const $=id=>document.getElementById(id);
 const SUPPORTED_LOCALES=['en','zh-CN','zh-TW','ja','ko','es','fr','de','pt-BR','ru','ar'];
 const localeStorageKey='m365_locale';
@@ -486,7 +486,7 @@ const localeText={
   'Refresh': {'zh-CN':'刷新','zh-TW':'重新整理','ja':'更新','ko':'새로고침','es':'Actualizar','fr':'Actualiser','de':'Aktualisieren','pt-BR':'Atualizar','ru':'Обновить','ar':'تحديث'},
   'Loading...': {'zh-CN':'加载中...','zh-TW':'載入中...','ja':'読み込み中...','ko':'로딩 중...','es':'Cargando...','fr':'Chargement...','de':'Wird geladen...','pt-BR':'Carregando...','ru':'Загрузка...','ar':'جارٍ التحميل...'},
   'Conversation detail': {'zh-CN':'对话详情','zh-TW':'對話詳情','ja':'会話詳細','ko':'대화 상세','es':'Detalle de la conversación','fr':'Détail de la conversation','de':'Unterhaltungsdetails','pt-BR':'Detalhe da conversa','ru':'Детали разговора','ar':'تفاصيل المحادثة'},
-  'Conversation metadata': {'zh-CN':'会话元数据','zh-TW':'會話中繼資料','ja':'セッションメタデータ','ko':'대화 메타데이터','es':'Metadatos de la conversación','fr':'Métadonnées de la conversation','de':'Unterhaltungsmetadaten','pt-BR':'Metadados da conversa','ru':'Метаданные разговора','ar':'بيانات المحادثة'},
+  'Conversation metadata': {'zh-CN':'会话元数据','zh-TW':'會話中繼資料','ja':'セッションメタデータ','ko':'대话 메타데이터','es':'Metadatos de la conversación','fr':'Métadonnées de la conversation','de':'Unterhaltungsmetadaten','pt-BR':'Metadados da conversa','ru':'Метаданные разговора','ar':'بيانات المحادثة'},
   'Messages': {'zh-CN':'消息数','zh-TW':'訊息數','ja':'メッセージ数','ko':'메시지 수','es':'Mensajes','fr':'Messages','de':'Nachrichten','pt-BR':'Mensagens','ru':'Сообщения','ar':'الرسائل'},
   'Accounts': {'zh-CN':'账号','zh-TW':'帳號','ja':'アカウント','ko':'계정','es':'Cuentas','fr':'Comptes','de':'Konten','pt-BR':'Contas','ru':'Аккаунты','ar':'الحسابات'},
   'Created': {'zh-CN':'创建时间','zh-TW':'建立時間','ja':'作成日時','ko':'생성 시간','es':'Creado','fr':'Créé','de':'Erstellt','pt-BR':'Criado','ru':'Создано','ar':'تاريخ الإنشاء'},
@@ -504,6 +504,7 @@ const localeText={
   'Thinking process': {'zh-CN':'思考过程','zh-TW':'思考過程','ja':'思考プロセス','ko':'생각 과정','es':'Proceso de razonamiento','fr':'Processus de réflexion','de':'Denkprozess','pt-BR':'Processo de pensamento','ru':'Процесс размышления','ar':'عملية التفكير'},
   'Tool call': {'zh-CN':'调用工具','zh-TW':'呼叫工具','ja':'ツール呼び出し','ko':'도구 호출','es':'Llamada a herramienta','fr':'Appel d\'outil','de':'Tool-Aufruf','pt-BR':'Chamada de ferramenta','ru':'Вызов инструмента','ar':'استدعاء الأداة'},
   'System prompt': {'zh-CN':'系统提示词','zh-TW':'系統提示詞','ja':'システムプロンプト','ko':'시스템 프롬프트','es':'Prompt del sistema','fr':'Invite système','de':'System-Prompt','pt-BR':'Prompt do sistema','ru':'Системный промпт','ar':'توجيه النظام'},
+  'System reminder': {'zh-CN':'上下文注入规则 (System Reminder)','zh-TW':'環境注入規則 (System Reminder)','ja':'システムリマインダー','ko':'시스템 리마인더','es':'Recordatorio del sistema','fr':'Rappel système','de':'Systemerinnerung','pt-BR':'Lembrete do sistema','ru':'Системное напоминание','ar':'تذكير النظام'},
   'Click to expand/collapse': {'zh-CN':'点击展开/收起','zh-TW':'點擊展開/收起','ja':'クリックして展開/折りたたむ','ko':'클릭하여 펼치기/접기','es':'Haga clic para expandir/contraer','fr':'Cliquer pour développer/réduire','de':'Klicken zum Aus-/Einklappen','pt-BR':'Clique para expandir/recolher','ru':'Нажмите, чтобы развернуть/свернуть','ar':'انقر للتوسيع/الطي'},
   'Unnamed conversation': {'zh-CN':'未命名对话','zh-TW':'未命名對話','ja':'無題の会話','ko':'이름 없는 대화','es':'Conversación sin nombre','fr':'Conversation sans nom','de':'Unbenannte Unterhaltung','pt-BR':'Conversa sem nome','ru':'Разговор без названия','ar':'محادثة بدون اسم'},
   'No messages yet': {'zh-CN':'暂无消息','zh-TW':'暫無訊息','ja':'メッセージはありません','ko':'메시지 없음','es':'Aún no hay mensajes','fr':'Aucun message pour l\'instant','de':'Noch keine Nachrichten','pt-BR':'Nenhuma mensagem ainda','ru':'Сообщений пока нет','ar':'لا توجد رسائل بعد'},
@@ -676,6 +677,25 @@ function contentHTML(content,role){
         </details>`;
       }
     }
+    if(role==='user'&&content.includes('<system-reminder>')){
+      let reminderText='';
+      const cleanContent=content.replace(/<system-reminder>([\s\S]*?)<\/system-reminder>/gi,(_,inner)=>{
+        reminderText+=(reminderText?'\n\n':'')+inner.trim();
+        return '';
+      }).trim();
+      let html='';
+      if(reminderText){
+        html+=`<details class="system-prompt-card" style="margin-bottom:12px">
+          <summary class="system-prompt-summary">
+            <span style="display:flex;align-items:center;gap:6px"><i data-lucide="paperclip" style="width:13px;height:13px"></i><span>${translateText('System reminder')} (${reminderText.length} 字符)</span></span>
+            <span style="font-size:11px;color:var(--muted)">${translateText('Click to expand/collapse')}</span>
+          </summary>
+          <div class="system-prompt-body">${renderMarkdown(reminderText)}</div>
+        </details>`;
+      }
+      html+=cleanContent?renderMarkdown(cleanContent):`<div class="empty-content">${translateText('Empty content')}</div>`;
+      return html;
+    }
     return renderMarkdown(content);
   }
   if(Array.isArray(content)){
@@ -775,14 +795,108 @@ function formatStandalonePreBlocks(container){
   });
 }
 
+// Unpack flattened prompt strings (both new XML <turn> format and legacy [tag] bracket format)
+function parseXMLTurns(text){
+  const turns=[];
+  const turnRegex=/<turn\s+role=["']([^"']+)["'](?:\s+tool_call_id=["']([^"']+)["'])?>([\s\S]*?)<\/turn>/gi;
+  let match;
+  while((match=turnRegex.exec(text))!==null){
+    const role=match[1].toLowerCase().trim();
+    const toolCallId=match[2]||'';
+    let inner=match[3]||'';
+    const turnObj={role:role,content:'',tool_call_id:toolCallId,tool_calls:null,reasoning_content:''};
+    const thoughtMatch=/<thought>([\s\S]*?)<\/thought>/i.exec(inner);
+    if(thoughtMatch){
+      turnObj.reasoning_content=thoughtMatch[1].trim();
+      inner=inner.replace(thoughtMatch[0],'').trim();
+    }
+    const toolCallsMatch=/<tool_calls>([\s\S]*?)<\/tool_calls>/i.exec(inner);
+    if(toolCallsMatch){
+      try{turnObj.tool_calls=JSON.parse(toolCallsMatch[1].trim());}
+      catch(_){turnObj.tool_calls=[{function:{name:'tool',arguments:toolCallsMatch[1].trim()}}];}
+      inner=inner.replace(toolCallsMatch[0],'').trim();
+    }
+    turnObj.content=inner.trim();
+    turns.push(turnObj);
+  }
+  return turns;
+}
+
+function parseBracketTurns(text){
+  const turns=[];
+  const regex=/(?:^|\r?\n)\[(system|developer|user|assistant|assistant tool_calls|tool result(?: id=[^\]]+)?)\](?:\s+|\r?\n|$)/gi;
+  const segments=[];
+  let lastIndex=0;
+  let match;
+  let currentTag=null;
+  while((match=regex.exec(text))!==null){
+    if(currentTag!==null){
+      const content=text.slice(lastIndex,match.index).trim();
+      segments.push({tag:currentTag,content});
+    }
+    currentTag=match[1];
+    lastIndex=regex.lastIndex;
+  }
+  if(currentTag!==null&&lastIndex<=text.length){
+    segments.push({tag:currentTag,content:text.slice(lastIndex).trim()});
+  }
+  for(const seg of segments){
+    const rawTag=seg.tag.toLowerCase();
+    const content=seg.content;
+    if(rawTag==='assistant tool_calls'){
+      let parsed=null;
+      try{parsed=JSON.parse(content);}catch(_){}
+      const prev=turns[turns.length-1];
+      if(prev&&prev.role==='assistant'&&!prev.tool_calls){
+        prev.tool_calls=parsed||[{function:{name:'tool',arguments:content}}];
+        if(prev.content==='<nil>')prev.content='';
+      }else{
+        turns.push({role:'assistant',content:'',tool_calls:parsed||[{function:{name:'tool',arguments:content}}]});
+      }
+    }else if(rawTag.startsWith('tool result')){
+      const idMatch=/id=([^\]\s]+)/i.exec(seg.tag);
+      turns.push({role:'tool',tool_call_id:idMatch?idMatch[1]:'',content:content});
+    }else if(rawTag==='assistant'){
+      const isNil=content==='<nil>'||!content;
+      turns.push({role:'assistant',content:isNil?'':content});
+    }else if(rawTag==='system'||rawTag==='developer'){
+      turns.push({role:rawTag,content:content});
+    }else if(rawTag==='user'){
+      turns.push({role:'user',content:content});
+    }
+  }
+  return turns;
+}
+
+function unflattenMessages(rawMessages){
+  if(!Array.isArray(rawMessages)||!rawMessages.length)return [];
+  const result=[];
+  for(const item of rawMessages){
+    const rawContent=typeof item?.content==='string'?item.content:'';
+    const hasXMLTurns=/<turn\s+role=["'][^"']+["']/i.test(rawContent);
+    const hasBracketTurns=/(?:^|\r?\n)\[(system|developer|user|assistant|tool result)[^\]]*\](?:\s+|\r?\n|$)/i.test(rawContent);
+    if(hasXMLTurns){
+      const parsed=parseXMLTurns(rawContent);
+      if(parsed.length>0){result.push(...parsed);continue;}
+    }else if(hasBracketTurns){
+      const parsed=parseBracketTurns(rawContent);
+      if(parsed.length>0){result.push(...parsed);continue;}
+    }
+    result.push(item);
+  }
+  return result;
+}
+
 function render(data){
   $('title').textContent=data.chatName||'未命名对话';
   $('conversationId').textContent=data.conversationId||'-';
-  $('messageCount').textContent=String(data.messageCount??data.messages?.length??0);
   $('account').textContent=data.accountEmail||data.accountId||'-';
   $('createdAt').textContent=formatDate(data.createdAt);
   $('updatedAt').textContent=formatDate(data.updatedAt);
-  const messages=Array.isArray(data.messages)?data.messages:[];
+  const rawMessages=Array.isArray(data.messages)?data.messages:[];
+  const messages=unflattenMessages(rawMessages);
+  state.unflattenedMessages=messages;
+  $('messageCount').textContent=String(messages.length);
   $('totalVisibleMessages').textContent=String(messages.length);
   const timeline=$('timeline');
   timeline.innerHTML=messages.length?messages.map(messageHTML).join(''):`<div class="empty">${translateText('No messages yet')}</div>`;
@@ -831,7 +945,7 @@ async function copyCode(btn){
 }
 
 async function copyMessageText(index){
-  const msg=state.data?.messages?.[index];
+  const msg=(state.unflattenedMessages||state.data?.messages)?.[index];
   if(!msg)return;
   const content=msg.content;
   let text='';
@@ -848,26 +962,27 @@ async function copyMessageText(index){
 }
 
 async function copyConversationMarkdown(){
-  if(!state.data?.messages)return;
+  const messages=state.unflattenedMessages||state.data?.messages;
+  if(!messages||!messages.length)return;
   const lines=[];
-  lines.push(`# ${state.data.chatName||'未命名对话'}\n`);
-  lines.push(`- **会话 ID**: \`${state.data.conversationId||'-'}\``);
-  lines.push(`- **账号**: ${state.data.accountEmail||state.data.accountId||'-'}`);
-  lines.push(`- **消息数**: ${state.data.messages.length}`);
-  lines.push(`- **更新时间**: ${formatDate(state.data.updatedAt)}\n\n---\n`);
-  state.data.messages.forEach((m,idx)=>{
+  lines.push(`# ${state.data?.chatName||'未命名对话'}\n`);
+  lines.push(`- **会话 ID**: \`${state.data?.conversationId||'-'}\``);
+  lines.push(`- **账号**: ${state.data?.accountEmail||state.data?.accountId||'-'}`);
+  lines.push(`- **消息数**: ${messages.length}`);
+  lines.push(`- **更新时间**: ${formatDate(state.data?.updatedAt)}\n\n---\n`);
+  messages.forEach((m,idx)=>{
     const role=(m.role||'message').toUpperCase();
     lines.push(`### ${role} (#${idx+1})\n`);
     if(m.reasoning_content){
       lines.push(`> **Thinking**:\n> ${m.reasoning_content.replace(/\n/g,'\n> ')}\n`);
     }
-    if(typeof m.content==='string')lines.push(m.content);
+    if(typeof m.content==='string'&&m.content)lines.push(m.content);
     else if(Array.isArray(m.content)){
       m.content.forEach(p=>{
         if(typeof p==='string')lines.push(p);
         else if(p?.text)lines.push(p.text);
       });
-    }else if(m.content!=null){
+    }else if(m.content!=null&&m.content!==''){
       lines.push('```json\n'+JSON.stringify(m.content,null,2)+'\n```');
     }
     if(m.tool_calls){
