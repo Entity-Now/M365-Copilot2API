@@ -7,93 +7,456 @@
 <link rel="icon" href="data:,">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+SC:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+SC:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <script src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
 <style>
-:root{color-scheme:light dark;--bg:#f6f7f9;--surface:#fff;--surface-2:#f1f3f6;--line:#e4e7ec;--text:#17191c;--muted:#69707a;--accent:#0969da;--green:#197a45;--orange:#a45400;--red:#c9352b;--shadow:0 8px 26px rgba(20,28,38,.07)}
-@media(prefers-color-scheme:dark){:root{--bg:#181a1d;--surface:#23262a;--surface-2:#2b2f34;--line:#3a3f45;--text:#f3f4f5;--muted:#a2a9b2;--accent:#58a6ff;--green:#56d38b;--orange:#ffb65c;--red:#ff756d;--shadow:0 8px 26px rgba(0,0,0,.24)}}
+:root{
+  color-scheme:light dark;
+  --bg:#f6f8fa;
+  --surface:#ffffff;
+  --surface-2:#f1f3f6;
+  --surface-3:#e8ebef;
+  --line:#e2e5e9;
+  --line-strong:#d0d7de;
+  --text:#1f2328;
+  --muted:#656d76;
+  --accent:#0969da;
+  --accent-bg:rgba(9,105,218,0.05);
+  --green:#1a7f37;
+  --green-bg:rgba(26,127,55,0.06);
+  --orange:#bc4c00;
+  --orange-bg:rgba(188,76,0,0.06);
+  --red:#cf222e;
+  --shadow:0 4px 16px rgba(0,0,0,.05);
+  --shadow-lg:0 10px 30px rgba(0,0,0,.08);
+  --font-mono:ui-monospace,SFMono-Regular,"JetBrains Mono",Consolas,"Liberation Mono",Menlo,monospace;
+  --code-bg:#1e2228;
+  --code-head:#282c34;
+  --code-text:#e6edf3;
+  --code-muted:#8b949e;
+  --code-line:rgba(255,255,255,0.08);
+}
+@media(prefers-color-scheme:dark){
+  :root{
+    --bg:#0d1117;
+    --surface:#161b22;
+    --surface-2:#21262d;
+    --surface-3:#2c313a;
+    --line:#30363d;
+    --line-strong:#484f58;
+    --text:#f0f6fc;
+    --muted:#8b949e;
+    --accent:#4493f8;
+    --accent-bg:rgba(68,147,248,0.08);
+    --green:#3fb950;
+    --green-bg:rgba(63,185,80,0.08);
+    --orange:#f0883e;
+    --orange-bg:rgba(240,136,62,0.08);
+    --red:#f85149;
+    --shadow:0 4px 16px rgba(0,0,0,.25);
+    --shadow-lg:0 12px 36px rgba(0,0,0,.45);
+    --code-bg:#12151a;
+    --code-head:#1c2128;
+    --code-text:#e6edf3;
+    --code-muted:#8b949e;
+    --code-line:rgba(255,255,255,0.06);
+  }
+}
 *{box-sizing:border-box}
-html,body{margin:0;min-height:100%;background:var(--bg);color:var(--text);font-family:Inter,"Noto Sans SC",system-ui,sans-serif;font-size:14px;line-height:1.65;letter-spacing:0}
-button{font:inherit;letter-spacing:0}
-.topbar{position:sticky;top:0;z-index:20;height:56px;border-bottom:1px solid var(--line);background:color-mix(in srgb,var(--surface) 90%,transparent);backdrop-filter:blur(16px);display:flex;align-items:center;justify-content:space-between;padding:0 max(18px,calc((100vw - 1120px)/2));gap:16px}
+html,body{margin:0;min-height:100%;background:var(--bg);color:var(--text);font-family:Inter,"Noto Sans SC",system-ui,-apple-system,sans-serif;font-size:14px;line-height:1.65;letter-spacing:0}
+button,input{font:inherit;letter-spacing:0}
+
+/* Topbar */
+.topbar{position:sticky;top:0;z-index:30;height:58px;border-bottom:1px solid var(--line);background:color-mix(in srgb,var(--surface) 88%,transparent);backdrop-filter:blur(16px);display:flex;align-items:center;justify-content:space-between;padding:0 max(20px,calc((100vw - 1100px)/2));gap:16px}
 .top-left,.top-actions,.segmented{display:flex;align-items:center;gap:8px}
-.brand{font-size:13px;font-weight:700;white-space:nowrap}
+.brand{font-size:13.5px;font-weight:700;white-space:nowrap;display:flex;align-items:center;gap:7px}
 .divider{width:1px;height:18px;background:var(--line)}
-.icon-btn{width:34px;height:34px;border:1px solid var(--line);border-radius:7px;background:var(--surface);color:var(--text);display:grid;place-items:center;cursor:pointer}
-.icon-btn:hover{border-color:var(--accent);color:var(--accent)}
-.icon-btn svg{width:16px;height:16px}
+.icon-btn{height:34px;padding:0 10px;border:1px solid var(--line);border-radius:7px;background:var(--surface);color:var(--text);display:inline-flex;align-items:center;justify-content:center;gap:6px;font-size:12.5px;font-weight:500;cursor:pointer;transition:all .15s ease}
+.icon-btn:hover{border-color:var(--accent);color:var(--accent);background:var(--accent-bg)}
+.icon-btn svg{width:15px;height:15px;flex-shrink:0}
 .segmented{padding:3px;border:1px solid var(--line);border-radius:8px;background:var(--surface-2)}
-.segmented button{height:28px;padding:0 12px;border:0;border-radius:5px;background:transparent;color:var(--muted);font-size:12px;font-weight:600;cursor:pointer}
+.segmented button{height:28px;padding:0 14px;border:0;border-radius:5px;background:transparent;color:var(--muted);font-size:12px;font-weight:600;cursor:pointer;transition:all .15s ease}
 .segmented button.active{background:var(--surface);color:var(--text);box-shadow:0 1px 4px rgba(0,0,0,.08)}
-main{width:min(1120px,calc(100% - 36px));margin:0 auto;padding:34px 0 64px}
-.heading{display:flex;align-items:flex-start;justify-content:space-between;gap:24px;padding-bottom:24px;border-bottom:1px solid var(--line)}
-.heading-copy{min-width:0}
-.eyebrow{font-size:11px;font-weight:700;color:var(--accent);text-transform:uppercase}
-h1{margin:5px 0 0;font-size:24px;line-height:1.35;font-weight:700;overflow-wrap:anywhere;letter-spacing:0}
-.identity{margin-top:9px;color:var(--muted);font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:11px;overflow-wrap:anywhere}
-.meta{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:0;border-bottom:1px solid var(--line)}
-.meta-item{padding:18px 20px;border-right:1px solid var(--line);min-width:0}
-.meta-item:first-child{padding-left:0}.meta-item:last-child{border-right:0}
-.meta-label{font-size:11px;color:var(--muted);font-weight:600}
-.meta-value{margin-top:3px;font-size:13px;font-weight:600;overflow-wrap:anywhere}
-.timeline{margin-top:8px}
-.message{display:grid;grid-template-columns:44px minmax(0,1fr);gap:14px;padding:24px 0;border-bottom:1px solid var(--line)}
-.role-icon{width:36px;height:36px;border-radius:8px;display:grid;place-items:center;background:var(--surface-2);color:var(--muted);border:1px solid var(--line)}
-.message.user .role-icon{color:var(--accent)}.message.assistant .role-icon{color:var(--green)}.message.tool .role-icon{color:var(--orange)}
-.role-icon svg{width:17px;height:17px}
-.message-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:8px}
-.role-name{font-size:12px;font-weight:700}
-.message-index{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:11px;color:var(--muted)}
-.message-content{font-size:14px;white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word}
-.empty-content{color:var(--muted);font-style:italic}
-details{margin-top:14px;border-left:3px solid var(--accent);background:var(--surface-2);border-radius:0 7px 7px 0;padding:10px 14px}
-summary{cursor:pointer;color:var(--accent);font-size:12px;font-weight:700}
-.reasoning{margin-top:8px;white-space:pre-wrap;overflow-wrap:anywhere;color:var(--muted)}
-.tool-call{margin-top:12px;border:1px solid var(--line);border-radius:7px;overflow:hidden;background:var(--surface)}
-.tool-call-head{display:flex;align-items:center;gap:8px;padding:8px 11px;background:var(--surface-2);border-bottom:1px solid var(--line);font-size:12px;font-weight:700}
-.tool-call-head svg{width:14px;height:14px;color:var(--orange)}
-pre{margin:0;padding:14px;white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px;line-height:1.65;color:var(--text)}
+
+/* Main Container */
+main{width:min(1080px,calc(100% - 32px));margin:0 auto;padding:28px 0 64px}
+
+/* Heading & Metadata Header */
+.heading{display:flex;align-items:flex-start;justify-content:space-between;gap:20px;padding-bottom:20px;border-bottom:1px solid var(--line)}
+.heading-copy{min-width:0;flex:1}
+.eyebrow{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:700;color:var(--accent);text-transform:uppercase;letter-spacing:0.04em}
+h1{margin:6px 0 0;font-size:22px;line-height:1.35;font-weight:700;overflow-wrap:anywhere;letter-spacing:-0.01em}
+.identity-bar{margin-top:8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.identity-badge{display:inline-flex;align-items:center;gap:6px;background:var(--surface-2);border:1px solid var(--line);border-radius:6px;padding:3px 9px;color:var(--muted);font-family:var(--font-mono);font-size:11.5px;cursor:pointer;transition:border-color .15s ease}
+.identity-badge:hover{border-color:var(--accent);color:var(--accent)}
+.identity-badge svg{width:12px;height:12px}
+
+.meta{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:0;border-bottom:1px solid var(--line);background:var(--surface);border-radius:10px;margin-top:18px;border:1px solid var(--line);overflow:hidden;box-shadow:var(--shadow)}
+.meta-item{padding:14px 18px;border-right:1px solid var(--line);min-width:0}
+.meta-item:last-child{border-right:0}
+.meta-label{font-size:11px;color:var(--muted);font-weight:600;display:flex;align-items:center;gap:5px}
+.meta-label svg{width:13px;height:13px}
+.meta-value{margin-top:4px;font-size:13.5px;font-weight:600;overflow-wrap:anywhere}
+
+/* Chat Timeline Controls */
+.timeline-controls{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:24px 0 16px;flex-wrap:wrap}
+.search-box{position:relative;flex:1;max-width:380px}
+.search-box input{width:100%;height:36px;padding:0 34px 0 34px;background:var(--surface);border:1px solid var(--line);border-radius:8px;font-size:13px;color:var(--text);outline:none;transition:border-color .15s,box-shadow .15s}
+.search-box input:focus{border-color:var(--accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 15%,transparent)}
+.search-box svg{position:absolute;left:10px;top:10px;width:16px;height:16px;color:var(--muted);pointer-events:none}
+.search-clear{position:absolute;right:8px;top:8px;width:20px;height:20px;display:grid;place-items:center;border:0;background:transparent;color:var(--muted);cursor:pointer;border-radius:4px}
+.search-clear:hover{color:var(--text)}
+.timeline-meta-summary{font-size:12px;color:var(--muted);font-weight:500}
+
+/* Chat Stream */
+.timeline{display:flex;flex-direction:column;gap:18px}
+
+/* Chat Message Card */
+.message-card{
+  border-radius:12px;
+  border:1px solid var(--line);
+  background:var(--surface);
+  box-shadow:var(--shadow);
+  padding:18px 22px;
+  transition:border-color .15s ease,box-shadow .15s ease;
+  position:relative;
+}
+.message-card:hover{border-color:color-mix(in srgb,var(--line) 55%,var(--accent))}
+
+/* Role-specific Accents */
+.message-card.user{
+  background:color-mix(in srgb,var(--accent) 3.5%,var(--surface));
+  border-color:color-mix(in srgb,var(--accent) 26%,var(--line));
+}
+.message-card.assistant{
+  background:var(--surface);
+  border-color:var(--line);
+}
+.message-card.tool{
+  background:color-mix(in srgb,var(--orange) 3.5%,var(--surface));
+  border-color:color-mix(in srgb,var(--orange) 30%,var(--line));
+  border-left:4px solid var(--orange);
+}
+.message-card.system,.message-card.developer{
+  background:var(--surface-2);
+  border-color:var(--line);
+  border-left:4px solid var(--muted);
+}
+
+/* Message Header */
+.message-header{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:12px;
+  margin-bottom:14px;
+  padding-bottom:10px;
+  border-bottom:1px solid color-mix(in srgb,var(--line) 65%,transparent);
+}
+.author-info{display:flex;align-items:center;gap:10px}
+.avatar{
+  width:32px;
+  height:32px;
+  border-radius:8px;
+  display:grid;
+  place-items:center;
+  flex-shrink:0;
+  color:#fff;
+}
+.avatar svg{width:16px;height:16px}
+.message-card.user .avatar{background:var(--accent)}
+.message-card.assistant .avatar{background:var(--green)}
+.message-card.tool .avatar{background:var(--orange)}
+.message-card.system .avatar,.message-card.developer .avatar{background:var(--muted)}
+
+.author-name{font-size:13px;font-weight:700}
+.role-badge{
+  font-size:11px;
+  font-weight:600;
+  padding:2px 7px;
+  border-radius:4px;
+  text-transform:uppercase;
+  letter-spacing:0.02em;
+}
+.message-card.user .role-badge{background:color-mix(in srgb,var(--accent) 15%,transparent);color:var(--accent)}
+.message-card.assistant .role-badge{background:color-mix(in srgb,var(--green) 15%,transparent);color:var(--green)}
+.message-card.tool .role-badge{background:color-mix(in srgb,var(--orange) 15%,transparent);color:var(--orange)}
+.message-card.system .role-badge,.message-card.developer .role-badge{background:color-mix(in srgb,var(--muted) 20%,transparent);color:var(--muted)}
+
+.message-index{font-family:var(--font-mono);font-size:11px;color:var(--muted)}
+.message-actions{display:flex;align-items:center;gap:6px}
+.msg-btn{
+  height:26px;
+  padding:0 8px;
+  border-radius:5px;
+  border:1px solid var(--line);
+  background:var(--surface);
+  color:var(--muted);
+  font-size:11.5px;
+  font-weight:500;
+  display:inline-flex;
+  align-items:center;
+  gap:4px;
+  cursor:pointer;
+  transition:all .15s ease;
+}
+.msg-btn:hover{border-color:var(--accent);color:var(--accent);background:var(--accent-bg)}
+.msg-btn svg{width:13px;height:13px}
+
+/* Markdown Content Styling */
+.markdown-body{
+  font-size:14px;
+  line-height:1.72;
+  color:var(--text);
+  overflow-wrap:break-word;
+  word-break:break-word;
+}
+.markdown-body p{margin:0 0 12px}
+.markdown-body p:last-child{margin-bottom:0}
+.markdown-body h1,.markdown-body h2,.markdown-body h3,.markdown-body h4{margin:18px 0 10px;font-weight:700;line-height:1.35;color:var(--text)}
+.markdown-body h1{font-size:20px;border-bottom:1px solid var(--line);padding-bottom:6px}
+.markdown-body h2{font-size:17px;border-bottom:1px solid var(--line);padding-bottom:4px}
+.markdown-body h3{font-size:15px}
+.markdown-body h4{font-size:14px}
+.markdown-body ul,.markdown-body ol{margin:8px 0 14px 22px;padding:0}
+.markdown-body li{margin-bottom:5px}
+.markdown-body li>p{margin-bottom:4px}
+.markdown-body blockquote{margin:12px 0;padding:8px 16px;border-left:3px solid var(--accent);background:var(--surface-2);border-radius:0 6px 6px 0;color:var(--muted)}
+.markdown-body table{width:100%;border-collapse:collapse;margin:14px 0;border-radius:8px;overflow:hidden;border:1px solid var(--line);font-size:13px}
+.markdown-body th,.markdown-body td{padding:8px 12px;border:1px solid var(--line);text-align:left}
+.markdown-body th{background:var(--surface-2);font-weight:600}
+.markdown-body hr{border:0;height:1px;background:var(--line);margin:18px 0}
+.markdown-body a{color:var(--accent);text-decoration:underline;text-underline-offset:2px}
+.inline-code,code:not(pre code){
+  padding:2px 6px;
+  border-radius:5px;
+  background:var(--surface-2);
+  border:1px solid var(--line);
+  font-family:var(--font-mono);
+  font-size:12.5px;
+  color:var(--accent);
+}
+
+/* Code Block Styling */
+.code-block{
+  margin:14px 0;
+  border-radius:8px;
+  border:1px solid var(--code-line);
+  background:var(--code-bg);
+  color:var(--code-text);
+  overflow:hidden;
+  box-shadow:0 4px 14px rgba(0,0,0,0.12);
+}
+.code-head{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  padding:7px 12px;
+  background:var(--code-head);
+  border-bottom:1px solid var(--code-line);
+  font-size:12px;
+  color:var(--code-muted);
+  font-family:var(--font-mono);
+}
+.code-lang{font-weight:600;text-transform:lowercase;letter-spacing:0.02em}
+.code-copy-btn{
+  display:inline-flex;
+  align-items:center;
+  gap:5px;
+  padding:3px 8px;
+  border-radius:4px;
+  border:1px solid rgba(255,255,255,0.14);
+  background:rgba(255,255,255,0.06);
+  color:var(--code-muted);
+  font-size:11px;
+  font-weight:500;
+  cursor:pointer;
+  transition:all .15s ease;
+}
+.code-copy-btn:hover{background:rgba(255,255,255,0.14);color:#fff;border-color:rgba(255,255,255,0.25)}
+.code-copy-btn.copied{background:rgba(40,167,69,0.25);color:#56d364;border-color:rgba(40,167,69,0.5)}
+.code-copy-btn svg{width:12px;height:12px}
+.code-block pre{
+  margin:0;
+  padding:14px;
+  overflow-x:auto;
+  font-family:var(--font-mono);
+  font-size:12.5px;
+  line-height:1.62;
+  color:var(--code-text);
+  white-space:pre;
+}
+.code-block code{font-family:inherit;font-size:inherit;color:inherit;background:transparent;padding:0;border:0}
+
+/* Thinking / Reasoning Box */
+.reasoning-box{
+  margin:12px 0 16px;
+  border:1px solid color-mix(in srgb,var(--accent) 30%,var(--line));
+  border-radius:8px;
+  background:color-mix(in srgb,var(--accent) 3%,var(--surface-2));
+  overflow:hidden;
+}
+.reasoning-summary{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  padding:9px 14px;
+  cursor:pointer;
+  font-size:12.5px;
+  font-weight:600;
+  color:var(--accent);
+  user-select:none;
+}
+.reasoning-summary:hover{background:color-mix(in srgb,var(--accent) 6%,transparent)}
+.reasoning-inner{
+  padding:12px 16px;
+  border-top:1px dashed color-mix(in srgb,var(--accent) 20%,var(--line));
+  font-size:13px;
+  line-height:1.65;
+  color:var(--muted);
+}
+
+/* Tool Calls & Results */
+.tool-call-card{
+  margin:10px 0;
+  border:1px solid color-mix(in srgb,var(--orange) 30%,var(--line));
+  border-radius:8px;
+  background:color-mix(in srgb,var(--orange) 2.5%,var(--surface));
+  overflow:hidden;
+}
+.tool-call-summary{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  padding:8px 12px;
+  background:color-mix(in srgb,var(--orange) 8%,var(--surface-2));
+  border-bottom:1px solid color-mix(in srgb,var(--orange) 20%,var(--line));
+  font-size:12px;
+  font-weight:700;
+  color:var(--orange);
+  cursor:pointer;
+  user-select:none;
+}
+.tool-call-summary svg{width:14px;height:14px}
+.tool-call-badge{margin-left:auto;font-size:11px;font-weight:500;color:var(--muted);font-family:var(--font-mono)}
+.tool-call-body{padding:10px 12px}
+
+/* System Prompt Card */
+.system-prompt-card{
+  margin:8px 0;
+  border:1px solid var(--line);
+  border-radius:8px;
+  background:var(--surface-2);
+  overflow:hidden;
+}
+.system-prompt-summary{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  padding:9px 12px;
+  font-size:12px;
+  font-weight:600;
+  color:var(--muted);
+  cursor:pointer;
+  user-select:none;
+}
+.system-prompt-summary:hover{background:var(--surface-3)}
+.system-prompt-body{padding:12px 14px;border-top:1px solid var(--line)}
+
+/* Image Previews */
+.image-bubble{margin:10px 0}
+.chat-img{max-width:100%;max-height:480px;border-radius:8px;border:1px solid var(--line);display:block;object-fit:contain;background:var(--surface-2)}
+
+/* Empty & Raw JSON */
+.empty-content{color:var(--muted);font-style:italic;font-size:13px}
+.empty,.loading,.error{padding:64px 20px;text-align:center;color:var(--muted)}
+.error{color:var(--red)}
 .raw{margin-top:24px;border:1px solid var(--line);border-radius:8px;background:var(--surface);overflow:hidden;box-shadow:var(--shadow)}
 .raw-head{display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:var(--surface-2);border-bottom:1px solid var(--line);font-size:12px;font-weight:700}
-.loading,.error,.empty{padding:64px 20px;text-align:center;color:var(--muted)}
-.error{color:var(--red)}
+.raw pre{margin:0;padding:14px;white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;font-family:var(--font-mono);font-size:12px;line-height:1.65;color:var(--text)}
+
+/* Toast Notification */
+.toast{
+  position:fixed;
+  bottom:28px;
+  left:50%;
+  transform:translateX(-50%) translateY(20px);
+  background:rgba(20,24,30,0.92);
+  color:#fff;
+  padding:8px 18px;
+  border-radius:20px;
+  font-size:13px;
+  font-weight:500;
+  box-shadow:0 10px 30px rgba(0,0,0,0.3);
+  opacity:0;
+  pointer-events:none;
+  transition:all .25s cubic-bezier(0.16,1,0.3,1);
+  z-index:1000;
+  backdrop-filter:blur(8px);
+}
+.toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+
 [hidden]{display:none!important}
-@media(max-width:700px){.topbar{padding:0 12px}.brand,.divider{display:none}main{width:min(100% - 24px,1120px);padding-top:22px}.heading{display:block}.meta{grid-template-columns:repeat(2,minmax(0,1fr))}.meta-item{padding:14px 10px;border-bottom:1px solid var(--line)}.meta-item:nth-child(2){border-right:0}.meta-item:first-child{padding-left:10px}.message{grid-template-columns:34px minmax(0,1fr);gap:10px;padding:20px 0}.role-icon{width:32px;height:32px}}
+@media(max-width:768px){
+  .topbar{padding:0 12px}
+  .brand span{display:none}
+  main{width:min(100% - 20px,1080px);padding-top:20px}
+  .meta{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .meta-item{padding:12px 14px}
+  .meta-item:nth-child(2){border-right:0}
+  .meta-item:nth-child(1),.meta-item:nth-child(2){border-bottom:1px solid var(--line)}
+  .message-card{padding:14px 16px}
+  .search-box{max-width:100%}
+}
 </style>
 </head>
 <body>
 <header class="topbar">
   <div class="top-left">
-    <button class="icon-btn" type="button" title="返回" aria-label="返回" onclick="goBack()"><i data-lucide="arrow-left"></i></button>
+    <button class="icon-btn" type="button" title="返回" aria-label="返回" onclick="goBack()"><i data-lucide="arrow-left"></i><span>返回</span></button>
     <span class="divider"></span>
-    <span class="brand">M365 Copilot2API</span>
+    <span class="brand"><i data-lucide="bot" style="color:var(--accent)"></i><span>M365 Copilot2API</span></span>
   </div>
   <div class="top-actions">
     <div class="segmented" role="tablist" aria-label="视图">
       <button id="conversationTab" class="active" type="button" onclick="setView('conversation')">对话</button>
       <button id="jsonTab" type="button" onclick="setView('json')">JSON</button>
     </div>
-    <button class="icon-btn" type="button" title="复制 JSON" aria-label="复制 JSON" onclick="copyJSON()"><i data-lucide="copy"></i></button>
+    <button class="icon-btn" type="button" title="复制 Markdown" aria-label="复制 Markdown" onclick="copyConversationMarkdown()"><i data-lucide="file-text"></i><span>Markdown</span></button>
+    <button class="icon-btn" type="button" title="复制 JSON" aria-label="复制 JSON" onclick="copyJSON()"><i data-lucide="copy"></i><span>JSON</span></button>
     <button class="icon-btn" type="button" title="刷新" aria-label="刷新" onclick="loadConversation()"><i data-lucide="refresh-cw"></i></button>
   </div>
 </header>
 <main>
-  <div id="loading" class="loading">加载中...</div>
+  <div id="loading" class="loading"><i data-lucide="loader-2" class="spin" style="margin-right:6px"></i>加载中...</div>
   <div id="error" class="error" hidden></div>
   <div id="conversationView" hidden>
     <section class="heading">
       <div class="heading-copy">
-        <div class="eyebrow">对话详情</div>
+        <div class="eyebrow"><i data-lucide="messages-square" style="width:13px;height:13px"></i>对话详情</div>
         <h1 id="title">-</h1>
-        <div class="identity" id="conversationId">-</div>
+        <div class="identity-bar">
+          <div class="identity-badge" id="conversationIdBadge" title="点击复制会话 ID" onclick="copyID()"><i data-lucide="hash"></i><span id="conversationId">-</span><i data-lucide="copy"></i></div>
+        </div>
       </div>
     </section>
     <section class="meta" aria-label="会话元数据">
-      <div class="meta-item"><div class="meta-label">消息数</div><div class="meta-value" id="messageCount">0</div></div>
-      <div class="meta-item"><div class="meta-label">账号</div><div class="meta-value" id="account">-</div></div>
-      <div class="meta-item"><div class="meta-label">创建时间</div><div class="meta-value" id="createdAt">-</div></div>
-      <div class="meta-item"><div class="meta-label">最近更新</div><div class="meta-value" id="updatedAt">-</div></div>
+      <div class="meta-item"><div class="meta-label"><i data-lucide="message-circle"></i>消息数</div><div class="meta-value" id="messageCount">0</div></div>
+      <div class="meta-item"><div class="meta-label"><i data-lucide="user-check"></i>账号</div><div class="meta-value" id="account">-</div></div>
+      <div class="meta-item"><div class="meta-label"><i data-lucide="calendar"></i>创建时间</div><div class="meta-value" id="createdAt">-</div></div>
+      <div class="meta-item"><div class="meta-label"><i data-lucide="clock"></i>最近更新</div><div class="meta-value" id="updatedAt">-</div></div>
     </section>
+
+    <div class="timeline-controls">
+      <div class="search-box">
+        <i data-lucide="search"></i>
+        <input id="searchInput" type="search" placeholder="搜索消息内容..." oninput="onSearch(this.value)" />
+        <button id="searchClear" class="search-clear" type="button" onclick="clearSearch()" hidden><i data-lucide="x"></i></button>
+      </div>
+      <div class="timeline-meta-summary" id="searchSummary">共 <span id="totalVisibleMessages">0</span> 条消息</div>
+    </div>
+
     <section class="timeline" id="timeline"></section>
   </div>
   <section id="jsonView" class="raw" hidden>
@@ -101,8 +464,9 @@ pre{margin:0;padding:14px;white-space:pre-wrap;overflow-wrap:anywhere;word-break
     <pre id="rawJSON"></pre>
   </section>
 </main>
+<div id="toast" class="toast"></div>
 <script>
-const state={data:null,view:'conversation'};
+const state={data:null,view:'conversation',searchQuery:''};
 const $=id=>document.getElementById(id);
 const SUPPORTED_LOCALES=['en','zh-CN','zh-TW','ja','ko','es','fr','de','pt-BR','ru','ar'];
 const localeStorageKey='m365_locale';
@@ -111,7 +475,14 @@ const localeText={
   'Back': {'zh-CN':'返回','zh-TW':'返回','ja':'戻る','ko':'뒤로','es':'Volver','fr':'Retour','de':'Zurück','pt-BR':'Voltar','ru':'Назад','ar':'رجوع'},
   'View': {'zh-CN':'视图','zh-TW':'檢視','ja':'表示','ko':'보기','es':'Ver','fr':'Afficher','de':'Ansicht','pt-BR':'Ver','ru':'Вид','ar':'عرض'},
   'Conversation': {'zh-CN':'对话','zh-TW':'對話','ja':'会話','ko':'대화','es':'Conversación','fr':'Conversation','de':'Unterhaltung','pt-BR':'Conversa','ru':'Разговор','ar':'محادثة'},
+  'Copy': {'zh-CN':'复制','zh-TW':'複製','ja':'コピー','ko':'복사','es':'Copiar','fr':'Copier','de':'Kopieren','pt-BR':'Copiar','ru':'Копировать','ar':'نسخ'},
+  'Copied!': {'zh-CN':'已复制!','zh-TW':'已複製!','ja':'コピー完了!','ko':'복사됨!','es':'¡Copiado!','fr':'Copié !','de':'Kopiert!','pt-BR':'Copiado!','ru':'Скопировано!','ar':'تم النسخ!'},
   'Copy JSON': {'zh-CN':'复制 JSON','zh-TW':'複製 JSON','ja':'JSON をコピー','ko':'JSON 복사','es':'Copiar JSON','fr':'Copier JSON','de':'JSON kopieren','pt-BR':'Copiar JSON','ru':'Копировать JSON','ar':'نسخ JSON'},
+  'Copy Markdown': {'zh-CN':'复制 Markdown','zh-TW':'複製 Markdown','ja':'Markdown をコピー','ko':'Markdown 복사','es':'Copiar Markdown','fr':'Copier Markdown','de':'Markdown kopieren','pt-BR':'Copiar Markdown','ru':'Копировать Markdown','ar':'نسخ Markdown'},
+  'Message copied': {'zh-CN':'消息已复制','zh-TW':'訊息已複製','ja':'メッセージをコピーしました','ko':'메시지가 복사되었습니다','es':'Mensaje copiado','fr':'Message copié','de':'Nachricht kopiert','pt-BR':'Mensagem copiada','ru':'Сообщение скопировано','ar':'تم نسخ الرسالة'},
+  'Conversation copied': {'zh-CN':'对话已复制为 Markdown','zh-TW':'對話已複製為 Markdown','ja':'会話を Markdown としてコピーしました','ko':'대화가 Markdown으로 복사되었습니다','es':'Conversación copiada como Markdown','fr':'Conversation copiée au format Markdown','de':'Unterhaltung als Markdown kopiert','pt-BR':'Conversa copiada como Markdown','ru':'Разговор скопирован в формате Markdown','ar':'تم نسخ المحادثة بصيغة Markdown'},
+  'ID copied': {'zh-CN':'会话 ID 已复制','zh-TW':'會話 ID 已複製','ja':'会話 ID をコピーしました','ko':'대화 ID가 복사되었습니다','es':'ID copiado','fr':'ID copié','de':'ID kopiert','pt-BR':'ID copiado','ru':'ID скопирован','ar':'تم نسخ المعرف'},
+  'Search messages...': {'zh-CN':'搜索消息内容...','zh-TW':'搜尋訊息內容...','ja':'メッセージを検索...','ko':'메시지 검색...','es':'Buscar mensajes...','fr':'Rechercher des messages...','de':'Nachrichten suchen...','pt-BR':'Pesquisar mensagens...','ru':'Поиск сообщений...','ar':'البحث في الرسائل...'},
   'Refresh': {'zh-CN':'刷新','zh-TW':'重新整理','ja':'更新','ko':'새로고침','es':'Actualizar','fr':'Actualiser','de':'Aktualisieren','pt-BR':'Atualizar','ru':'Обновить','ar':'تحديث'},
   'Loading...': {'zh-CN':'加载中...','zh-TW':'載入中...','ja':'読み込み中...','ko':'로딩 중...','es':'Cargando...','fr':'Chargement...','de':'Wird geladen...','pt-BR':'Carregando...','ru':'Загрузка...','ar':'جارٍ التحميل...'},
   'Conversation detail': {'zh-CN':'对话详情','zh-TW':'對話詳情','ja':'会話詳細','ko':'대화 상세','es':'Detalle de la conversación','fr':'Détail de la conversation','de':'Unterhaltungsdetails','pt-BR':'Detalhe da conversa','ru':'Детали разговора','ar':'تفاصيل المحادثة'},
@@ -130,6 +501,10 @@ const localeText={
   'Empty content': {'zh-CN':'空内容','zh-TW':'空內容','ja':'空の内容','ko':'내용 없음','es':'Contenido vacío','fr':'Contenu vide','de':'Leerer Inhalt','pt-BR':'Conteúdo vazio','ru':'Пустое содержимое','ar':'محتوى فارغ'},
   'Image': {'zh-CN':'图片','zh-TW':'圖片','ja':'画像','ko':'이미지','es':'Imagen','fr':'Image','de':'Bild','pt-BR':'Imagem','ru':'Изображение','ar':'صورة'},
   'Reasoning': {'zh-CN':'推理','zh-TW':'推理','ja':'推論','ko':'추론','es':'Razonamiento','fr':'Raisonnement','de':'Denken','pt-BR':'Raciocínio','ru':'Рассуждение','ar':'استدلال'},
+  'Thinking process': {'zh-CN':'思考过程','zh-TW':'思考過程','ja':'思考プロセス','ko':'생각 과정','es':'Proceso de razonamiento','fr':'Processus de réflexion','de':'Denkprozess','pt-BR':'Processo de pensamento','ru':'Процесс размышления','ar':'عملية التفكير'},
+  'Tool call': {'zh-CN':'调用工具','zh-TW':'呼叫工具','ja':'ツール呼び出し','ko':'도구 호출','es':'Llamada a herramienta','fr':'Appel d\'outil','de':'Tool-Aufruf','pt-BR':'Chamada de ferramenta','ru':'Вызов инструмента','ar':'استدعاء الأداة'},
+  'System prompt': {'zh-CN':'系统提示词','zh-TW':'系統提示詞','ja':'システムプロンプト','ko':'시스템 프롬프트','es':'Prompt del sistema','fr':'Invite système','de':'System-Prompt','pt-BR':'Prompt do sistema','ru':'Системный промпт','ar':'توجيه النظام'},
+  'Click to expand/collapse': {'zh-CN':'点击展开/收起','zh-TW':'點擊展開/收起','ja':'クリックして展開/折りたたむ','ko':'클릭하여 펼치기/접기','es':'Haga clic para expandir/contraer','fr':'Cliquer pour développer/réduire','de':'Klicken zum Aus-/Einklappen','pt-BR':'Clique para expandir/recolher','ru':'Нажмите, чтобы развернуть/свернуть','ar':'انقر للتوسيع/الطي'},
   'Unnamed conversation': {'zh-CN':'未命名对话','zh-TW':'未命名對話','ja':'無題の会話','ko':'이름 없는 대화','es':'Conversación sin nombre','fr':'Conversation sans nom','de':'Unbenannte Unterhaltung','pt-BR':'Conversa sem nome','ru':'Разговор без названия','ar':'محادثة بدون اسم'},
   'No messages yet': {'zh-CN':'暂无消息','zh-TW':'暫無訊息','ja':'メッセージはありません','ko':'메시지 없음','es':'Aún no hay mensajes','fr':'Aucun message pour l\'instant','de':'Noch keine Nachrichten','pt-BR':'Nenhuma mensagem ainda','ru':'Сообщений пока нет','ar':'لا توجد رسائل بعد'},
   'Missing conversation ID': {'zh-CN':'缺少会话 ID','zh-TW':'缺少會話 ID','ja':'会話 ID がありません','ko':'대화 ID가 없습니다','es':'Falta el ID de la conversación','fr':'ID de conversation manquant','de':'Unterhaltungs-ID fehlt','pt-BR':'ID da conversa ausente','ru':'Отсутствует ID разговора','ar':'معرف المحادثة مفقود'},
@@ -181,51 +556,225 @@ applyLocale(currentLocale);
 function escapeHTML(value){return String(value??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
 function formatDate(value){if(!value)return '-';const date=new Date(value);return Number.isNaN(date.getTime())?'-':date.toLocaleString();}
 function pretty(value){if(typeof value==='string'){try{return JSON.stringify(JSON.parse(value),null,2)}catch(_){return value}}return JSON.stringify(value,null,2);}
-function roleMeta(role){
-  if(role==='user')return{name:'用户',icon:'user'};
-  if(role==='assistant')return{name:'助手',icon:'sparkles'};
-  if(role==='tool')return{name:'工具结果',icon:'wrench'};
-  if(role==='system'||role==='developer')return{name:role==='system'?'系统':'开发者',icon:'settings'};
-  return{name:role||'消息',icon:'message-square'};
+
+// Initialize marked custom renderer
+function initMarked(){
+  if(typeof marked!=='undefined'){
+    try{
+      const renderer={
+        code(codeOrObj,langArg){
+          let text='',lang='';
+          if(codeOrObj&&typeof codeOrObj==='object'){text=codeOrObj.text||'';lang=codeOrObj.lang||'';}
+          else{text=codeOrObj||'';lang=langArg||'';}
+          const language=(lang||'text').trim().split(/\s+/)[0];
+          const escaped=escapeHTML(text);
+          return `<div class="code-block"><div class="code-head"><span class="code-lang">${escapeHTML(language)}</span><button class="code-copy-btn" type="button" onclick="copyCode(this)"><i data-lucide="copy"></i><span>${translateText('Copy')}</span></button></div><pre><code class="language-${escapeHTML(language)}">${escaped}</code></pre></div>`;
+        },
+        link(linkOrObj,titleArg,textArg){
+          let href='',title='',text='';
+          if(linkOrObj&&typeof linkOrObj==='object'){href=linkOrObj.href||'';title=linkOrObj.title||'';text=linkOrObj.text||'';}
+          else{href=linkOrObj||'';title=titleArg||'';text=textArg||'';}
+          const t=title?` title="${escapeHTML(title)}"`:'';
+          return `<a href="${escapeHTML(href)}"${t} target="_blank" rel="noopener noreferrer">${text}</a>`;
+        }
+      };
+      marked.use({renderer,gfm:true,breaks:true});
+    }catch(e){console.warn('initMarked error',e);}
+  }
 }
-function contentHTML(content){
-  if(typeof content==='string')return content?`<div class="message-content">${escapeHTML(content)}</div>`:'<div class="empty-content">空内容</div>';
+initMarked();
+
+// Fallback markdown renderer in case marked is blocked or offline
+function fallbackMarkdown(raw){
+  if(!raw)return '';
+  const codeBlocks=[];
+  let s=String(raw).replace(/```([a-zA-Z0-9_-]*)\r?\n([\s\S]*?)```/g,(match,lang,code)=>{
+    const placeholder=`__CODE_BLOCK_${codeBlocks.length}__`;
+    const language=(lang||'text').trim();
+    codeBlocks.push(`<div class="code-block"><div class="code-head"><span class="code-lang">${escapeHTML(language)}</span><button class="code-copy-btn" type="button" onclick="copyCode(this)"><i data-lucide="copy"></i><span>${translateText('Copy')}</span></button></div><pre><code class="language-${escapeHTML(language)}">${escapeHTML(code.replace(/\r\n/g,'\n'))}</code></pre></div>`);
+    return placeholder;
+  });
+  s=escapeHTML(s);
+  s=s.replace(/`([^`\n]+)`/g,'<code class="inline-code">$1</code>');
+  s=s.replace(/^### (.*$)/gim,'<h4 class="md-h">$1</h4>');
+  s=s.replace(/^## (.*$)/gim,'<h3 class="md-h">$1</h3>');
+  s=s.replace(/^# (.*$)/gim,'<h2 class="md-h">$1</h2>');
+  s=s.replace(/^\> (.*$)/gim,'<blockquote>$1</blockquote>');
+  s=s.replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>');
+  s=s.replace(/__([^_]+)__/g,'<strong>$1</strong>');
+  s=s.replace(/\*([^*]+)\*/g,'<em>$1</em>');
+  s=s.replace(/^(?:---|\*\*\*|___)\s*$/gim,'<hr>');
+  s=s.replace(/\[([^\]]+)\]\((https?:\/\/[^\s\)]+)\)/g,'<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+  s=s.replace(/^\s*[-*]\s+(.*$)/gim,'<li>$1</li>');
+  s=s.replace(/(<li>[\s\S]*?<\/li>)/g,'<ul>$1</ul>');
+  s=s.replace(/\n\n+/g,'</p><p>');
+  s=s.replace(/\n/g,'<br>');
+  s=`<p>${s}</p>`.replace(/<p>\s*<\/p>/g,'');
+  codeBlocks.forEach((block,idx)=>{
+    s=s.replace(`__CODE_BLOCK_${idx}__`,block);
+    s=s.replace(`<p>${block}</p>`,block);
+  });
+  return s;
+}
+
+function sanitizeHTML(html){
+  const template=document.createElement('template');
+  template.innerHTML=html;
+  const elements=template.content.querySelectorAll('script,iframe,object,embed,form,input,button:not(.code-copy-btn)');
+  elements.forEach(el=>el.remove());
+  template.content.querySelectorAll('*').forEach(el=>{
+    for(const attr of Array.from(el.attributes)){
+      const name=attr.name.toLowerCase();
+      const val=attr.value.toLowerCase();
+      if(name.startsWith('on')&&!el.classList.contains('code-copy-btn')){el.removeAttribute(attr.name);}
+      if((name==='href'||name==='src')&&(val.startsWith('javascript:')||val.startsWith('vbscript:'))){el.removeAttribute(attr.name);}
+    }
+  });
+  return template.innerHTML;
+}
+
+function renderMarkdown(content){
+  if(content==null)return `<div class="empty-content">${translateText('Empty content')}</div>`;
+  const text=typeof content==='string'?content:pretty(content);
+  if(!text.trim())return `<div class="empty-content">${translateText('Empty content')}</div>`;
+  if(window.marked&&typeof window.marked.parse==='function'){
+    try{
+      const html=window.marked.parse(text);
+      return `<div class="markdown-body">${sanitizeHTML(html)}</div>`;
+    }catch(e){console.warn('marked parse error',e);}
+  }
+  return `<div class="markdown-body">${fallbackMarkdown(text)}</div>`;
+}
+
+function isJSON(str){
+  if(typeof str!=='string')return false;
+  const s=str.trim();
+  if((s.startsWith('{')&&s.endsWith('}'))||(s.startsWith('[')&&s.endsWith(']'))){
+    try{JSON.parse(s);return true;}catch(_){return false;}
+  }
+  return false;
+}
+
+function roleMeta(role){
+  if(role==='user')return{name:'用户',badge:'User',icon:'user'};
+  if(role==='assistant')return{name:'助手',badge:'Assistant',icon:'sparkles'};
+  if(role==='tool')return{name:'工具结果',badge:'Tool',icon:'wrench'};
+  if(role==='system'||role==='developer')return{name:role==='system'?'系统':'开发者',badge:'System',icon:'settings'};
+  return{name:role||'消息',badge:'Msg',icon:'message-square'};
+}
+
+function contentHTML(content,role){
+  if(typeof content==='string'){
+    if(role==='system'||role==='developer'){
+      if(content.length>160){
+        return `<details class="system-prompt-card">
+          <summary class="system-prompt-summary">
+            <span style="display:flex;align-items:center;gap:6px"><i data-lucide="shield-alert" style="width:14px;height:14px"></i><span>${translateText('System prompt')} (${content.length} 字符)</span></span>
+            <span style="font-size:11px;color:var(--muted)">${translateText('Click to expand/collapse')}</span>
+          </summary>
+          <div class="system-prompt-body">${renderMarkdown(content)}</div>
+        </details>`;
+      }
+    }
+    return renderMarkdown(content);
+  }
   if(Array.isArray(content)){
     const parts=content.map(part=>{
-      if(typeof part==='string')return `<div class="message-content">${escapeHTML(part)}</div>`;
-      if(part&&typeof part==='object'&&(part.type==='text'||part.type==='input_text'||part.type==='output_text'))return `<div class="message-content">${escapeHTML(part.text||'')}</div>`;
+      if(typeof part==='string')return renderMarkdown(part);
+      if(part&&typeof part==='object'&&(part.type==='text'||part.type==='input_text'||part.type==='output_text'))return renderMarkdown(part.text||'');
       if(part&&typeof part==='object'&&part.type==='image_url'){
         const url=typeof part.image_url==='string'?part.image_url:part.image_url?.url;
-        return `<div class="tool-call"><div class="tool-call-head"><i data-lucide="image"></i>图片</div><pre>${escapeHTML(url||pretty(part))}</pre></div>`;
+        return `<div class="image-bubble"><a href="${escapeHTML(url)}" target="_blank" rel="noopener noreferrer"><img src="${escapeHTML(url)}" alt="Image" class="chat-img" loading="lazy"></a></div>`;
       }
-      return `<div class="tool-call"><div class="tool-call-head"><i data-lucide="braces"></i>${escapeHTML(part?.type||'content')}</div><pre>${escapeHTML(pretty(part))}</pre></div>`;
+      return `<div class="code-block"><div class="code-head"><span class="code-lang">${escapeHTML(part?.type||'json')}</span><button class="code-copy-btn" type="button" onclick="copyCode(this)"><i data-lucide="copy"></i><span>${translateText('Copy')}</span></button></div><pre><code class="language-json">${escapeHTML(pretty(part))}</code></pre></div>`;
     });
-    return parts.join('')||'<div class="empty-content">空内容</div>';
+    return parts.join('')||`<div class="empty-content">${translateText('Empty content')}</div>`;
   }
-  if(content==null)return '<div class="empty-content">空内容</div>';
-  return `<pre>${escapeHTML(pretty(content))}</pre>`;
+  if(content==null)return `<div class="empty-content">${translateText('Empty content')}</div>`;
+  return renderMarkdown(pretty(content));
 }
+
 function toolCallsHTML(calls){
   if(!Array.isArray(calls)||!calls.length)return '';
   return calls.map(call=>{
     const fn=call?.function||{};
-    return `<div class="tool-call"><div class="tool-call-head"><i data-lucide="square-function"></i>${escapeHTML(fn.name||call.name||'tool')}</div><pre>${escapeHTML(pretty(fn.arguments??call.arguments??call))}</pre></div>`;
+    const name=fn.name||call.name||'tool';
+    const args=fn.arguments??call.arguments??call;
+    const formatted=typeof args==='string'?pretty(args):JSON.stringify(args,null,2);
+    return `<details class="tool-call-card" open>
+      <summary class="tool-call-summary">
+        <i data-lucide="wrench"></i>
+        <span>${translateText('Tool call')}: <code>${escapeHTML(name)}</code></span>
+        ${call.id?`<span class="tool-call-badge">ID: ${escapeHTML(call.id)}</span>`:''}
+      </summary>
+      <div class="tool-call-body">
+        <div class="code-block">
+          <div class="code-head">
+            <span class="code-lang">arguments</span>
+            <button class="code-copy-btn" type="button" onclick="copyCode(this)"><i data-lucide="copy"></i><span>${translateText('Copy')}</span></button>
+          </div>
+          <pre><code class="language-json">${escapeHTML(formatted)}</code></pre>
+        </div>
+      </div>
+    </details>`;
   }).join('');
 }
+
+function reasoningHTML(reasoning){
+  if(!reasoning)return '';
+  return `<details class="reasoning-box">
+    <summary class="reasoning-summary">
+      <span style="display:flex;align-items:center;gap:7px"><i data-lucide="brain" style="width:14px;height:14px"></i><span>${translateText('Thinking process')}</span></span>
+      <span style="font-size:11px;opacity:0.8">${reasoning.length} 字符</span>
+    </summary>
+    <div class="reasoning-inner">${renderMarkdown(reasoning)}</div>
+  </details>`;
+}
+
 function messageHTML(message,index){
   const role=String(message?.role||'message').toLowerCase();
   const meta=roleMeta(role);
   const reasoning=message?.reasoning_content;
-  return `<article class="message ${escapeHTML(role)}">
-    <div class="role-icon"><i data-lucide="${meta.icon}"></i></div>
-    <div>
-      <div class="message-head"><span class="role-name">${escapeHTML(meta.name)}</span><span class="message-index">#${index+1}</span></div>
-      ${contentHTML(message?.content)}
-      ${toolCallsHTML(message?.tool_calls)}
-      ${reasoning?`<details><summary>推理</summary><div class="reasoning">${escapeHTML(reasoning)}</div></details>`:''}
+  return `<article class="message-card ${escapeHTML(role)}" data-message-index="${index}">
+    <div class="message-header">
+      <div class="author-info">
+        <div class="avatar"><i data-lucide="${meta.icon}"></i></div>
+        <span class="author-name">${escapeHTML(meta.name)}</span>
+        <span class="role-badge">${escapeHTML(meta.badge)}</span>
+        <span class="message-index">#${index+1}</span>
+      </div>
+      <div class="message-actions">
+        <button class="msg-btn" type="button" title="复制此条消息" onclick="copyMessageText(${index})">
+          <i data-lucide="copy"></i><span>${translateText('Copy')}</span>
+        </button>
+      </div>
     </div>
+    ${reasoningHTML(reasoning)}
+    ${contentHTML(message?.content,role)}
+    ${toolCallsHTML(message?.tool_calls)}
   </article>`;
 }
+
+function formatStandalonePreBlocks(container){
+  container.querySelectorAll('.markdown-body pre').forEach(pre=>{
+    if(pre.closest('.code-block'))return;
+    const code=pre.querySelector('code');
+    let lang='text';
+    if(code){
+      const cls=Array.from(code.classList).find(c=>c.startsWith('language-'));
+      if(cls)lang=cls.replace('language-','');
+    }
+    const wrapper=document.createElement('div');
+    wrapper.className='code-block';
+    const head=document.createElement('div');
+    head.className='code-head';
+    head.innerHTML=`<span class="code-lang">${escapeHTML(lang)}</span><button class="code-copy-btn" type="button" onclick="copyCode(this)"><i data-lucide="copy"></i><span>${translateText('Copy')}</span></button>`;
+    pre.parentNode.insertBefore(wrapper,pre);
+    wrapper.appendChild(head);
+    wrapper.appendChild(pre);
+  });
+}
+
 function render(data){
   $('title').textContent=data.chatName||'未命名对话';
   $('conversationId').textContent=data.conversationId||'-';
@@ -234,7 +783,10 @@ function render(data){
   $('createdAt').textContent=formatDate(data.createdAt);
   $('updatedAt').textContent=formatDate(data.updatedAt);
   const messages=Array.isArray(data.messages)?data.messages:[];
-  $('timeline').innerHTML=messages.length?messages.map(messageHTML).join(''):'<div class="empty">暂无消息</div>';
+  $('totalVisibleMessages').textContent=String(messages.length);
+  const timeline=$('timeline');
+  timeline.innerHTML=messages.length?messages.map(messageHTML).join(''):`<div class="empty">${translateText('No messages yet')}</div>`;
+  formatStandalonePreBlocks(timeline);
   const raw=JSON.stringify(data,null,2);
   $('rawJSON').textContent=raw;
   $('jsonSize').textContent=new Intl.NumberFormat().format(new Blob([raw]).size)+' bytes';
@@ -243,6 +795,7 @@ function render(data){
   setView(state.view);
   lucide.createIcons();
 }
+
 async function loadConversation(){
   const id=new URLSearchParams(location.search).get('id');
   if(!id){showError('缺少会话 ID');return;}
@@ -255,9 +808,128 @@ async function loadConversation(){
     state.data=data;render(data);
   }catch(error){showError(error.message||'加载失败');}
 }
+
 function showError(message){$('loading').hidden=true;$('conversationView').hidden=true;$('jsonView').hidden=true;$('error').textContent=message;$('error').hidden=false;}
 function setView(view){state.view=view==='json'?'json':'conversation';$('conversationTab').classList.toggle('active',state.view==='conversation');$('jsonTab').classList.toggle('active',state.view==='json');if(state.data){$('conversationView').hidden=state.view!=='conversation';$('jsonView').hidden=state.view!=='json';}}
-async function copyJSON(){if(!state.data)return;try{await navigator.clipboard.writeText(JSON.stringify(state.data,null,2));}catch(_){}}
+
+async function copyCode(btn){
+  const pre=btn.closest('.code-block')?.querySelector('pre');
+  if(!pre)return;
+  const text=pre.innerText||pre.textContent||'';
+  try{
+    await navigator.clipboard.writeText(text);
+    const span=btn.querySelector('span');
+    const oldText=span?span.textContent:'';
+    if(span)span.textContent=translateText('Copied!');
+    btn.classList.add('copied');
+    showToast(translateText('Copied!'));
+    setTimeout(()=>{
+      if(span)span.textContent=oldText;
+      btn.classList.remove('copied');
+    },2000);
+  }catch(e){showToast('复制失败');}
+}
+
+async function copyMessageText(index){
+  const msg=state.data?.messages?.[index];
+  if(!msg)return;
+  const content=msg.content;
+  let text='';
+  if(typeof content==='string')text=content;
+  else if(Array.isArray(content)){
+    text=content.map(p=>typeof p==='string'?p:(p?.text||JSON.stringify(p))).join('\n');
+  }else{
+    text=JSON.stringify(content,null,2);
+  }
+  try{
+    await navigator.clipboard.writeText(text);
+    showToast(translateText('Message copied'));
+  }catch(e){showToast('复制失败');}
+}
+
+async function copyConversationMarkdown(){
+  if(!state.data?.messages)return;
+  const lines=[];
+  lines.push(`# ${state.data.chatName||'未命名对话'}\n`);
+  lines.push(`- **会话 ID**: \`${state.data.conversationId||'-'}\``);
+  lines.push(`- **账号**: ${state.data.accountEmail||state.data.accountId||'-'}`);
+  lines.push(`- **消息数**: ${state.data.messages.length}`);
+  lines.push(`- **更新时间**: ${formatDate(state.data.updatedAt)}\n\n---\n`);
+  state.data.messages.forEach((m,idx)=>{
+    const role=(m.role||'message').toUpperCase();
+    lines.push(`### ${role} (#${idx+1})\n`);
+    if(m.reasoning_content){
+      lines.push(`> **Thinking**:\n> ${m.reasoning_content.replace(/\n/g,'\n> ')}\n`);
+    }
+    if(typeof m.content==='string')lines.push(m.content);
+    else if(Array.isArray(m.content)){
+      m.content.forEach(p=>{
+        if(typeof p==='string')lines.push(p);
+        else if(p?.text)lines.push(p.text);
+      });
+    }else if(m.content!=null){
+      lines.push('```json\n'+JSON.stringify(m.content,null,2)+'\n```');
+    }
+    if(m.tool_calls){
+      lines.push('\n**Tool Calls**:');
+      m.tool_calls.forEach(c=>{
+        lines.push('```json\n'+JSON.stringify(c,null,2)+'\n```');
+      });
+    }
+    lines.push('\n---\n');
+  });
+  try{
+    await navigator.clipboard.writeText(lines.join('\n'));
+    showToast(translateText('Conversation copied'));
+  }catch(e){showToast('复制失败');}
+}
+
+async function copyJSON(){
+  if(!state.data)return;
+  try{
+    await navigator.clipboard.writeText(JSON.stringify(state.data,null,2));
+    showToast(translateText('ID copied'));
+  }catch(_){}
+}
+
+async function copyID(){
+  const id=state.data?.conversationId;
+  if(!id)return;
+  try{
+    await navigator.clipboard.writeText(id);
+    showToast(translateText('ID copied'));
+  }catch(_){}
+}
+
+function onSearch(query){
+  state.searchQuery=query.trim().toLowerCase();
+  $('searchClear').hidden=!state.searchQuery;
+  const cards=document.querySelectorAll('.message-card');
+  let visibleCount=0;
+  cards.forEach(card=>{
+    if(!state.searchQuery){card.hidden=false;visibleCount++;return;}
+    const text=card.textContent.toLowerCase();
+    const matches=text.includes(state.searchQuery);
+    card.hidden=!matches;
+    if(matches)visibleCount++;
+  });
+  $('totalVisibleMessages').textContent=String(visibleCount);
+}
+
+function clearSearch(){
+  $('searchInput').value='';
+  onSearch('');
+}
+
+function showToast(msg){
+  const t=$('toast');
+  if(!t)return;
+  t.textContent=msg;
+  t.classList.add('show');
+  clearTimeout(t._timer);
+  t._timer=setTimeout(()=>t.classList.remove('show'),2000);
+}
+
 function goBack(){if(history.length>1)history.back();else location.href='/?page=conversations';}
 lucide.createIcons();
 loadConversation();
