@@ -251,6 +251,8 @@ func (s *Server) handleM365ConversationDetail(w http.ResponseWriter, r *http.Req
 			"messageCount":   len(session.ContextHistory),
 			"messages":       session.ContextHistory,
 			"tools":          parsedTools,
+			"skills":         extractSkillsFromMessages(session.ContextHistory),
+			"router":         getRouterDirectivesInfo(s.toolPlanningMode(), len(session.Tools) > 0),
 		})
 		return
 	}
@@ -279,6 +281,8 @@ func (s *Server) handleM365ConversationDetail(w http.ResponseWriter, r *http.Req
 					"messageCount":   0,
 					"messages":       []any{},
 					"tools":          []any{},
+					"skills":         []any{},
+					"router":         getRouterDirectivesInfo(s.toolPlanningMode(), false),
 				})
 				return
 			}
@@ -311,6 +315,8 @@ func (s *Server) handleM365ConversationDetail(w http.ResponseWriter, r *http.Req
 				"messageCount":   0,
 				"messages":       []any{},
 				"tools":          []any{},
+				"skills":         []any{},
+				"router":         getRouterDirectivesInfo(s.toolPlanningMode(), false),
 			})
 			return
 		}
@@ -329,6 +335,8 @@ func (s *Server) handleM365ConversationDetail(w http.ResponseWriter, r *http.Req
 		"messageCount":   0,
 		"messages":       []any{},
 		"tools":          []any{},
+		"skills":         []any{},
+		"router":         getRouterDirectivesInfo(s.toolPlanningMode(), false),
 	})
 }
 
@@ -516,3 +524,101 @@ func (s *Server) conversationWhitelist(w http.ResponseWriter, r *http.Request) {
 	}
 	jsonOut(w, map[string]any{"status": "updated", "conversation_id": body.ConversationID, "whitelisted": body.Add})
 }
+
+var (
+	reSkillsTag    = regexp.MustCompile(`(?is)<skills>(.*?)</skills>`)
+	reSkillDefLine = regexp.MustCompile(`^[-*]\s+([a-zA-Z0-9_\-\.]+)\s*(?:\(([^)]+)\))?\s*:\s*(.+)$`)
+)
+
+func extractSkillsFromMessages(messages []oaiMsg) []map[string]string {
+	skills := make([]map[string]string, 0)
+	seen := make(map[string]bool)
+
+	for _, msg := range messages {
+		contentStr := ""
+		switch c := msg.Content.(type) {
+		case string:
+			contentStr = c
+		}
+		if contentStr == "" {
+			continue
+		}
+
+		section := ""
+		if m := reSkillsTag.FindStringSubmatch(contentStr); len(m) > 1 {
+			if idx := strings.Index(m[1], "Available skills:"); idx != -1 {
+				section = m[1][idx:]
+			} else {
+				section = m[1]
+			}
+		} else if idx := strings.Index(contentStr, "Available skills:"); idx != -1 {
+			section = contentStr[idx:]
+		}
+
+		if section == "" {
+			continue
+		}
+
+		lines := strings.Split(section, "\n")
+		var currentSkill map[string]string
+		for _, rawLine := range lines {
+			line := strings.TrimSpace(rawLine)
+			if line == "" {
+				continue
+			}
+			if strings.HasPrefix(line, "Available skills:") || strings.HasPrefix(line, "## Available skills") {
+				continue
+			}
+			if match := reSkillDefLine.FindStringSubmatch(line); len(match) > 3 {
+				name := strings.TrimSpace(match[1])
+				lower := strings.ToLower(name)
+				if lower == "scripts" || lower == "examples" || lower == "resources" || lower == "references" || lower == "skill.md" {
+					continue
+				}
+				path := strings.TrimSpace(match[2])
+				desc := strings.TrimSpace(match[3])
+				if !seen[name] {
+					seen[name] = true
+					currentSkill = map[string]string{
+						"name":        name,
+						"path":        path,
+						"description": desc,
+					}
+					skills = append(skills, currentSkill)
+				}
+			} else if currentSkill != nil {
+				if strings.HasPrefix(line, "</skills>") || strings.HasPrefix(line, "```") {
+					currentSkill = nil
+					continue
+				}
+				currentSkill["description"] = currentSkill["description"] + "\n" + line
+			}
+		}
+	}
+	return skills
+}
+
+func getRouterDirectivesInfo(planningMode string, hasTools bool) map[string]any {
+	rules := []string{
+		"本地宿主权限：所有工具均直接在调用者的本地操作系统运行，具备本地工作区、相对路径与绝对路径的直接读写执行权限。",
+		"严禁沙箱幻觉：网关是内部调度器，严禁声称处于云端沙箱或无本地权限，严禁索取 ZIP 压缩包上传。",
+		"技能优先读取：当提示词包含 <skills> 或 Available skills: 且任务相关时，必须优先调用 view_file / Read 工具读取对应 SKILL.md。",
+		"充分上下文保障：在得出结论或答复 NO_TOOL_NEEDED 之前，必须先读取所有必要的项目上下文文件。",
+		"独立决策通道：网关在后台通过独立瞬态通道前置执行工具调度判定，完成后释放瞬态会话，以避免污染客户端历史上下文。",
+	}
+	return map[string]any{
+		"planningMode": planningMode,
+		"enabled":      hasTools && planningMode == "router",
+		"title":        "网关智能路由守则 (Gateway Tool Router)",
+		"description":  "网关采用两阶段规划架构：在模型返回结果前，先通过独立瞬态通道进行工具选择决策，既确保工具调用的严谨性，又完全避免污染客户端的原生对话历史。",
+		"rules":        rules,
+	}
+}
+
+func (s *Server) toolPlanningMode() string {
+	if s != nil && s.settings != nil {
+		return s.settings.get().ToolPlanningMode
+	}
+	return "router"
+}
+

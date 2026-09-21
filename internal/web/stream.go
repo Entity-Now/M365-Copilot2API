@@ -68,17 +68,33 @@ func (s *Server) chatStream(w http.ResponseWriter, r *http.Request) {
 		ConversationSignature: body.ConversationSignature, PreviousMessages: body.PreviousMessages, ConnectedFederatedIDs: body.ConnectedFederatedIDs,
 		FeatureFlags: s.featureFlags(),
 	})
-	if err != nil && body.AccountID == "" && body.ConversationID == "" && (IsRateLimited(err) || IsAuthFailure(err)) {
+	if err != nil && body.AccountID == "" && (IsRateLimited(err) || IsAuthFailure(err)) {
+		if s.accountPool != nil {
+			if errors.Is(err, chathub.ErrImageLimit) || IsImageLimitErr(err) {
+				s.accountPool.MarkImageLimited(acc.ID)
+			} else {
+				s.accountPool.MarkFailure(acc.ID, err, s.getRateLimitCooldown())
+			}
+		}
 		if next, nextErr := s.nextHealthyAccount(acc.ID, accountIDs); nextErr == nil {
 			ctx2 := ctx
-			res, err = s.chatWithAccount(ctx2, next.ID, chathub.Account{AccessToken: next.AccessToken, OID: next.OID, TID: next.TID}, chathub.Request{
-				Text: text, Tone: body.Tone, ConversationID: body.ConversationID, SessionID: body.SessionID, Attachments: body.Attachments,
+			failoverReq := chathub.Request{
+				Text: text, Tone: body.Tone, Attachments: body.Attachments,
 				LicenseType: streamSettings.LicenseType, Scenario: streamSettings.Scenario,
 				ConversationSignature: body.ConversationSignature, PreviousMessages: body.PreviousMessages, ConnectedFederatedIDs: body.ConnectedFederatedIDs,
 				FeatureFlags: s.featureFlags(),
-			})
+			}
+			res, err = s.chatWithAccount(ctx2, next.ID, chathub.Account{AccessToken: next.AccessToken, OID: next.OID, TID: next.TID}, failoverReq)
 			if err == nil {
 				acc = next
+			} else {
+				if s.accountPool != nil {
+					if errors.Is(err, chathub.ErrImageLimit) || IsImageLimitErr(err) {
+						s.accountPool.MarkImageLimited(next.ID)
+					} else {
+						s.accountPool.MarkFailure(next.ID, err, s.getRateLimitCooldown())
+					}
+				}
 			}
 		}
 	}

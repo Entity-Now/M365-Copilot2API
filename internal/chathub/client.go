@@ -674,7 +674,15 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 			return false
 		}
 		t := strings.ToLower(text)
-		return strings.Contains(t, "无法生成更多图像") || strings.Contains(t, "unable to generate more images") || strings.Contains(t, "cannot generate more images today")
+		return strings.Contains(t, "无法生成更多图像") ||
+			strings.Contains(t, "无法再生成图片") ||
+			strings.Contains(t, "unable to generate more images") ||
+			strings.Contains(t, "cannot generate more images") ||
+			strings.Contains(t, "can't generate any more images") ||
+			strings.Contains(t, "can’t generate any more images") ||
+			strings.Contains(t, "generate any more images") ||
+			strings.Contains(t, "daily image limit") ||
+			strings.Contains(t, "image generation quota")
 	}
 	contentPolicyDetected := func(text string) bool {
 		if streamed.Len() != 0 {
@@ -1148,9 +1156,13 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 					returnConn = false
 					return Result{}, ErrRateLimitNotice
 				}
-				if text == "" {
+				imgs := imageURLs(events)
+				if text == "" && len(imgs) == 0 {
 					returnConn = false
 					return Result{}, ErrEmptyCompletion
+				}
+				if text == "" && len(imgs) > 0 {
+					text = fmt.Sprintf("![Generated Image](%s)", imgs[0])
 				}
 				if offense != "" {
 					returnConn = false
@@ -1178,7 +1190,7 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 					RawResult:                 rawResult,
 					Events:                    events,
 					Normalized:                NormalizeEvents(events),
-					Images:                    imageURLs(events),
+					Images:                    imgs,
 					Timestamps:                ts,
 				}
 				return result, nil

@@ -1543,15 +1543,20 @@ func (s *Server) chatOnce(w http.ResponseWriter, r *http.Request) {
 		// request when the pool has other healthy accounts. Only auto-selected
 		// requests fail over; an explicitly chosen account is respected, and a
 		// conversation-bound chat stays on its account.
-		if body.AccountID == "" && (IsRateLimited(err) || IsAuthFailure(err)) && (IsRateLimited(err) || body.ConversationID == "") {
+		if body.AccountID == "" && (IsRateLimited(err) || IsAuthFailure(err)) {
+			if s.accountPool != nil {
+				if errors.Is(originalErr, chathub.ErrImageLimit) || IsImageLimitErr(originalErr) {
+					s.accountPool.MarkImageLimited(acc.ID)
+				} else {
+					s.accountPool.MarkFailure(acc.ID, originalErr, s.getRateLimitCooldown())
+				}
+			}
 			next, nerr := s.nextHealthyAccount(acc.ID, accountIDs)
 			if nerr == nil {
 				ctx2 := ctx
-				res2, err2 := s.chatWithAccount(ctx2, next.ID, chathub.Account{AccessToken: next.AccessToken, OID: next.OID, TID: next.TID}, chathub.Request{
+				failoverReq := chathub.Request{
 					Text:                  text,
 					Tone:                  body.Tone,
-					ConversationID:        body.ConversationID,
-					SessionID:             body.SessionID,
 					Attachments:           body.Attachments,
 					LicenseType:           chatSettings.LicenseType,
 					Scenario:              chatSettings.Scenario,
@@ -1559,17 +1564,19 @@ func (s *Server) chatOnce(w http.ResponseWriter, r *http.Request) {
 					PreviousMessages:      body.PreviousMessages,
 					ConnectedFederatedIDs: body.ConnectedFederatedIDs,
 					FeatureFlags:          s.featureFlags(),
-				})
+				}
+				res2, err2 := s.chatWithAccount(ctx2, next.ID, chathub.Account{AccessToken: next.AccessToken, OID: next.OID, TID: next.TID}, failoverReq)
 				if err2 == nil {
-					if errors.Is(originalErr, chathub.ErrImageLimit) && s.accountPool != nil {
-						s.accountPool.MarkImageLimited(acc.ID)
-					}
 					acc = next
 					res = res2
 					err = nil
 				} else {
-					if errors.Is(err2, chathub.ErrImageLimit) && s.accountPool != nil {
-						s.accountPool.MarkImageLimited(next.ID)
+					if s.accountPool != nil {
+						if errors.Is(err2, chathub.ErrImageLimit) || IsImageLimitErr(err2) {
+							s.accountPool.MarkImageLimited(next.ID)
+						} else {
+							s.accountPool.MarkFailure(next.ID, err2, s.getRateLimitCooldown())
+						}
 					}
 					err = err2
 				}
@@ -1878,6 +1885,9 @@ func buildAnswerRequest(answerPrompt, tone string, body oaiReq, ledger agentLedg
 	if isToolRefusal(answerPrompt) || isSandboxHallucination(answerPrompt) || strings.Contains(answerPrompt, `:\`) {
 		answerPrompt += "\nENVIRONMENT NOTICE: You are connected to a local workspace host. Do NOT assume a cloud sandbox, Python container, or /mnt/data. Do NOT ask the user to upload ZIP archives."
 	}
+	if strings.Contains(answerPrompt, "<skills>") || strings.Contains(answerPrompt, "Available skills:") {
+		answerPrompt += "\nSKILLS NOTICE: If the user request relates to any registered skill in <skills>, you must use the appropriate file-reading tool to inspect its SKILL.md before answering."
+	}
 	req := chathub.Request{Text: answerPrompt, Tone: tone, ConversationID: body.ConversationID, SessionID: body.SessionID, Attachments: body.Attachments, LicenseType: cfg.LicenseType, Scenario: cfg.Scenario, FeatureFlags: flags, Locale: locale.Locale, Market: locale.Market, TimeZone: locale.TimeZone, TimeZoneOffset: locale.TimeZoneOffset, DeviceOS: locale.DeviceOS, DisableMemory: disableMemory}
 	// The audited HAR set does not contain a complete client-tool invocation
 	// lifecycle, stable call identifier, argument-delta contract, or tool-result
@@ -2002,16 +2012,18 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[temp-session] copilot_temp_session=true, clearing conversation/session for one-shot request")
 	}
 	answerPrompt := prompt
+	requestedAccountID := body.AccountID
 	convCacheNamespace := responseNamespace(tenantFromRequest(r), firstNonEmpty(responseSessionID(r), body.SessionKey, body.User))
-	resolvedConversationID := ""
 	if body.ConversationID == "" && len(body.Messages) > 0 && (body.Metadata == nil || !body.Metadata.CopilotTempSession) {
 		resolved := s.sessionResolver.Resolve(r, &body)
 		if !resolved.IsNew {
 			if maxMessages := s.settings.get().MaxConversationMessages; shouldRotateResolvedConversation(resolved.HistoryLen, len(body.Messages), maxMessages) {
 				log.Printf("[session-resolver] rotating conversation=%s history=%d limit=%d", resolved.ConversationID, resolved.HistoryLen, maxMessages)
 				s.convCache.Invalidate(convCacheNamespace, resolved.AccountID, firstNonEmpty(body.Model, "m365-copilot"))
+			} else if requestedAccountID == "" && !s.accountAvailable(resolved.AccountID) {
+				log.Printf("[session-resolver] bound account=%s is unavailable/cooling down, rotating session to healthy account", resolved.AccountID)
+				s.convCache.Invalidate(convCacheNamespace, resolved.AccountID, firstNonEmpty(body.Model, "m365-copilot"))
 			} else {
-				resolvedConversationID = resolved.ConversationID
 				body.ConversationID = resolved.ConversationID
 				body.SessionID = resolved.SessionID
 				body.AccountID = firstNonEmpty(body.AccountID, resolved.AccountID)
@@ -2062,7 +2074,9 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	if body.ConversationID == "" && len(body.Messages) > 1 &&
 		(body.Metadata == nil || !body.Metadata.CopilotTempSession) {
 		if cached := s.convCache.Lookup(convCacheNamespace, acc.ID, convCacheModel); cached != nil && !shouldRotateConversation(cached.MessageCount, s.settings.get().MaxConversationMessages) {
-			if len(body.Messages) == cached.MessageCount && messagesHash(body.Messages) == cached.MessagesHash {
+			if !s.accountAvailable(acc.ID) {
+				s.convCache.Invalidate(convCacheNamespace, acc.ID, convCacheModel)
+			} else if len(body.Messages) == cached.MessageCount && messagesHash(body.Messages) == cached.MessagesHash {
 				// identical full context: reuse same conversation without re-sending history
 				body.ConversationID = cached.ConversationID
 				body.SessionID = cached.SessionID
@@ -2126,7 +2140,10 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		routePrompt := modelToolRouterPrompt(prompt+"\n"+activeLedger.RouterContext(), toolMaps, body.ToolChoice)
 		routeRes, routeErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: routePrompt, Tone: tone, Attachments: body.Attachments, LicenseType: toolCfg.LicenseType, Scenario: toolCfg.Scenario})
 		if routeErr != nil {
-			if body.AccountID == "" && (IsRateLimited(routeErr) || IsAuthFailure(routeErr)) {
+			if requestedAccountID == "" && (IsRateLimited(routeErr) || IsAuthFailure(routeErr)) {
+				if s.accountPool != nil {
+					s.accountPool.MarkFailure(acc.ID, routeErr, s.getRateLimitCooldown())
+				}
 				tried := map[string]bool{acc.ID: true}
 				curID := acc.ID
 				for range s.tokens.List() {
@@ -2145,7 +2162,9 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 						account = chathub.Account{AccessToken: next.AccessToken, OID: next.OID, TID: next.TID}
 						break
 					} else {
-						s.accountPool.MarkFailure(next.ID, err2, s.getRateLimitCooldown())
+						if s.accountPool != nil {
+							s.accountPool.MarkFailure(next.ID, err2, s.getRateLimitCooldown())
+						}
 						if !IsRateLimited(err2) && !IsAuthFailure(err2) {
 							routeErr = err2
 							break
@@ -2335,8 +2354,19 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 			}
 			return streamEmitText(ev, &text, &pending, emitText)
 		})
-		if err != nil && text.Len() == 0 && len(streamedTools) == 0 && !convReused && body.AccountID == "" && (IsRateLimited(err) || IsAuthFailure(err)) && (IsRateLimited(err) || body.ConversationID == "" || body.ConversationID == resolvedConversationID) {
+		if err != nil && text.Len() == 0 && len(streamedTools) == 0 && requestedAccountID == "" && (IsRateLimited(err) || IsAuthFailure(err)) {
 			originalErr := err
+			if s.accountPool != nil {
+				if errors.Is(originalErr, chathub.ErrImageLimit) || IsImageLimitErr(originalErr) {
+					s.accountPool.MarkImageLimited(acc.ID)
+				} else {
+					s.accountPool.MarkFailure(acc.ID, originalErr, s.getRateLimitCooldown())
+				}
+			}
+			if convReused {
+				s.invalidateConvCache(convCacheNamespace, acc.ID, convCacheModel)
+				convReused = false
+			}
 			tried := map[string]bool{acc.ID: true}
 			curID := acc.ID
 			curErr := err
@@ -2350,10 +2380,9 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 				}
 				tried[next.ID] = true
 				failoverReq := answerReq
-				if body.ConversationID == resolvedConversationID {
-					failoverReq.ConversationID = ""
-					failoverReq.SessionID = ""
-				}
+				failoverReq.ConversationID = ""
+				failoverReq.SessionID = ""
+				failoverReq.Text = prompt
 				ctx2 := ctx
 				res2, err2 := s.chatWithAccountEvents(ctx2, next.ID, chathub.Account{AccessToken: next.AccessToken, OID: next.OID, TID: next.TID}, failoverReq, func(ev chathub.StreamEvent) error {
 					if ev.Kind == "tool" && ev.ToolName != "" && len(ev.Arguments) > 0 {
@@ -2377,22 +2406,20 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 					return streamEmitText(ev, &text, &pending, emitText)
 				})
 				if err2 == nil {
-					if errors.Is(originalErr, chathub.ErrImageLimit) && s.accountPool != nil {
-						s.accountPool.MarkImageLimited(acc.ID)
-					}
 					res = res2
 					acc = next
+					account = chathub.Account{AccessToken: next.AccessToken, OID: next.OID, TID: next.TID}
 					err = nil
 					curErr = nil
 					break
 				} else {
-					if errors.Is(originalErr, chathub.ErrImageLimit) && s.accountPool != nil {
-						s.accountPool.MarkImageLimited(acc.ID)
+					if s.accountPool != nil {
+						if errors.Is(err2, chathub.ErrImageLimit) || IsImageLimitErr(err2) {
+							s.accountPool.MarkImageLimited(next.ID)
+						} else {
+							s.accountPool.MarkFailure(next.ID, err2, s.getRateLimitCooldown())
+						}
 					}
-					if errors.Is(err2, chathub.ErrImageLimit) && s.accountPool != nil {
-						s.accountPool.MarkImageLimited(next.ID)
-					}
-					s.accountPool.MarkFailure(next.ID, err2, s.getRateLimitCooldown())
 					err = err2
 					curErr = err2
 					curID = next.ID
@@ -2582,8 +2609,19 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 			return onReasoning(reasoning)
 		}
 		res, err = s.chatWithAccountReasoning(ctx, acc.ID, account, answerReq, onDeltaWrapped, onReasoningWrapped)
-		if err != nil && streamedReasoningLen == 0 && !convReused && body.AccountID == "" && (IsRateLimited(err) || IsAuthFailure(err)) && (IsRateLimited(err) || body.ConversationID == "" || body.ConversationID == resolvedConversationID) {
+		if err != nil && streamedReasoningLen == 0 && requestedAccountID == "" && (IsRateLimited(err) || IsAuthFailure(err)) {
 			originalErr := err
+			if s.accountPool != nil {
+				if errors.Is(originalErr, chathub.ErrImageLimit) || IsImageLimitErr(originalErr) {
+					s.accountPool.MarkImageLimited(acc.ID)
+				} else {
+					s.accountPool.MarkFailure(acc.ID, originalErr, s.getRateLimitCooldown())
+				}
+			}
+			if convReused {
+				s.invalidateConvCache(convCacheNamespace, acc.ID, convCacheModel)
+				convReused = false
+			}
 			tried := map[string]bool{acc.ID: true}
 			curID := acc.ID
 			curErr := err
@@ -2597,28 +2635,25 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 				}
 				tried[next.ID] = true
 				failoverReq := answerReq
-				if body.ConversationID == resolvedConversationID {
-					failoverReq.ConversationID = ""
-					failoverReq.SessionID = ""
-				}
+				failoverReq.ConversationID = ""
+				failoverReq.SessionID = ""
+				failoverReq.Text = prompt
 				ctx2 := ctx
 				if res2, err2 := s.chatWithAccountReasoning(ctx2, next.ID, chathub.Account{AccessToken: next.AccessToken, OID: next.OID, TID: next.TID}, failoverReq, onDelta, onReasoning); err2 == nil {
-					if errors.Is(originalErr, chathub.ErrImageLimit) && s.accountPool != nil {
-						s.accountPool.MarkImageLimited(acc.ID)
-					}
 					res = res2
 					acc = next
+					account = chathub.Account{AccessToken: next.AccessToken, OID: next.OID, TID: next.TID}
 					err = nil
 					curErr = nil
 					break
 				} else {
-					if errors.Is(originalErr, chathub.ErrImageLimit) && s.accountPool != nil {
-						s.accountPool.MarkImageLimited(acc.ID)
+					if s.accountPool != nil {
+						if errors.Is(err2, chathub.ErrImageLimit) || IsImageLimitErr(err2) {
+							s.accountPool.MarkImageLimited(next.ID)
+						} else {
+							s.accountPool.MarkFailure(next.ID, err2, s.getRateLimitCooldown())
+						}
 					}
-					if errors.Is(err2, chathub.ErrImageLimit) && s.accountPool != nil {
-						s.accountPool.MarkImageLimited(next.ID)
-					}
-					s.accountPool.MarkFailure(next.ID, err2, s.getRateLimitCooldown())
 					curErr = err2
 					err = err2
 					curID = next.ID
@@ -2734,10 +2769,14 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 				break
 			}
 			log.Printf("[image-model-failover] account %s (%s) failed or returned no images (err=%v, images=%d), trying next account...", currentAcc.ID, currentAcc.Email, currentErr, len(currentRes.Images))
-			if s.accountPool != nil && (errors.Is(currentErr, chathub.ErrImageLimit) || isImageLimitNotice(currentRes.Text)) {
-				s.accountPool.MarkImageLimited(currentAcc.ID)
+			if s.accountPool != nil {
+				if errors.Is(currentErr, chathub.ErrImageLimit) || isImageLimitNotice(currentRes.Text) || IsImageLimitErr(currentErr) {
+					s.accountPool.MarkImageLimited(currentAcc.ID)
+				} else if currentErr != nil {
+					s.accountPool.MarkFailure(currentAcc.ID, currentErr, s.getRateLimitCooldown())
+				}
 			}
-			if body.AccountID != "" {
+			if requestedAccountID != "" {
 				res = currentRes
 				acc = currentAcc
 				err = currentErr
@@ -2764,8 +2803,19 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 				err = nil
 			}
 		}
-		if err != nil && !convReused && body.AccountID == "" && (IsRateLimited(err) || IsAuthFailure(err)) && (IsRateLimited(err) || body.ConversationID == "" || body.ConversationID == resolvedConversationID) {
+		if err != nil && requestedAccountID == "" && (IsRateLimited(err) || IsAuthFailure(err)) {
 			originalErr := err
+			if s.accountPool != nil {
+				if errors.Is(originalErr, chathub.ErrImageLimit) || IsImageLimitErr(originalErr) {
+					s.accountPool.MarkImageLimited(acc.ID)
+				} else {
+					s.accountPool.MarkFailure(acc.ID, originalErr, s.getRateLimitCooldown())
+				}
+			}
+			if convReused {
+				s.invalidateConvCache(convCacheNamespace, acc.ID, convCacheModel)
+				convReused = false
+			}
 			tried := map[string]bool{acc.ID: true}
 			curID := acc.ID
 			curErr := err
@@ -2780,30 +2830,27 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 				}
 				tried[next.ID] = true
 				failoverReq := answerReq
-				if body.ConversationID == resolvedConversationID {
-					failoverReq.ConversationID = ""
-					failoverReq.SessionID = ""
-				}
+				failoverReq.ConversationID = ""
+				failoverReq.SessionID = ""
+				failoverReq.Text = prompt
 				ctx2 := ctx
 				res2, err2 := s.chatWithAccount(ctx2, next.ID, chathub.Account{AccessToken: next.AccessToken, OID: next.OID, TID: next.TID}, failoverReq)
 				if err2 == nil {
-					if errors.Is(originalErr, chathub.ErrImageLimit) && s.accountPool != nil {
-						s.accountPool.MarkImageLimited(acc.ID)
-					}
 					res = res2
 					acc = next
+					account = chathub.Account{AccessToken: next.AccessToken, OID: next.OID, TID: next.TID}
 					err = nil
 					curErr = nil
 					lastRes = res2
 					break
 				} else {
-					if errors.Is(originalErr, chathub.ErrImageLimit) && s.accountPool != nil {
-						s.accountPool.MarkImageLimited(acc.ID)
+					if s.accountPool != nil {
+						if errors.Is(err2, chathub.ErrImageLimit) || IsImageLimitErr(err2) {
+							s.accountPool.MarkImageLimited(next.ID)
+						} else {
+							s.accountPool.MarkFailure(next.ID, err2, s.getRateLimitCooldown())
+						}
 					}
-					if errors.Is(err2, chathub.ErrImageLimit) && s.accountPool != nil {
-						s.accountPool.MarkImageLimited(next.ID)
-					}
-					s.accountPool.MarkFailure(next.ID, err2, s.getRateLimitCooldown())
 					err = err2
 					curErr = err2
 					curID = next.ID

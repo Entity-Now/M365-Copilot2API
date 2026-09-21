@@ -190,6 +190,7 @@ func TestConversationDetailAdminLookupAndTools(t *testing.T) {
 		ConversationID string           `json:"conversationId"`
 		Messages       []oaiMsg         `json:"messages"`
 		Tools          []map[string]any `json:"tools"`
+		Router         map[string]any   `json:"router"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
 		t.Fatal(err)
@@ -203,6 +204,44 @@ func TestConversationDetailAdminLookupAndTools(t *testing.T) {
 	fn, _ := res.Tools[0]["function"].(map[string]any)
 	if fn["name"] != "bash" {
 		t.Fatalf("expected tool bash, got %v", fn["name"])
+	}
+	if res.Router == nil || res.Router["planningMode"] != "router" {
+		t.Fatalf("expected router info, got %+v", res.Router)
+	}
+}
+
+func TestExtractSkillsFromMessages(t *testing.T) {
+	prompt := `<skills>
+You can use specialized skills to help you.
+- **SKILL.md** (required): The main instruction file.
+- **scripts/** - Helper scripts.
+
+Available skills:
+- a11y-debugging (/path/to/a11y/SKILL.md): Uses Chrome DevTools MCP for accessibility (a11y) debugging.
+- modern-web-guidance (/path/to/web/SKILL.md): Search tool for modern web development best practices.
+  Trigger immediately for:
+  - UI/Layout: Modals, dialogs
+- test-runner: Runs tests automatically.
+</skills>`
+
+	messages := []oaiMsg{
+		{Role: "system", Content: prompt},
+		{Role: "user", Content: "Hello world"},
+	}
+
+	skills := extractSkillsFromMessages(messages)
+	if len(skills) != 3 {
+		t.Fatalf("expected 3 skills, got %d: %+v", len(skills), skills)
+	}
+
+	if skills[0]["name"] != "a11y-debugging" || skills[0]["path"] != "/path/to/a11y/SKILL.md" {
+		t.Errorf("skill[0] mismatch: %+v", skills[0])
+	}
+	if skills[1]["name"] != "modern-web-guidance" || !strings.Contains(skills[1]["description"], "Trigger immediately for") {
+		t.Errorf("skill[1] mismatch: %+v", skills[1])
+	}
+	if skills[2]["name"] != "test-runner" || skills[2]["path"] != "" {
+		t.Errorf("skill[2] mismatch: %+v", skills[2])
 	}
 }
 

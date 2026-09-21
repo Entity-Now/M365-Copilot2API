@@ -125,8 +125,12 @@ func (s *Server) imageGenerations(w http.ResponseWriter, r *http.Request) {
 	for attempt := 0; attempt < maxAccountProbe; attempt++ {
 		res, err = s.chatWithAccount(ctx, currentAcc.ID, chathub.Account{AccessToken: currentAcc.AccessToken, OID: currentAcc.OID, TID: currentAcc.TID}, chathub.Request{Text: prompt, Tone: "Magic", Attachments: b.Attachments, LicenseType: s.settings.get().LicenseType, Scenario: s.settings.get().Scenario, FeatureFlags: s.featureFlags()})
 		if err != nil {
-			if (errors.Is(err, chathub.ErrImageLimit) || IsImageLimitErr(err)) && s.accountPool != nil {
-				s.accountPool.MarkImageLimited(currentAcc.ID)
+			if s.accountPool != nil {
+				if errors.Is(err, chathub.ErrImageLimit) || IsImageLimitErr(err) {
+					s.accountPool.MarkImageLimited(currentAcc.ID)
+				} else {
+					s.accountPool.MarkFailure(currentAcc.ID, err, s.getRateLimitCooldown())
+				}
 			}
 			lastErr = err
 			if b.AccountID == "" {

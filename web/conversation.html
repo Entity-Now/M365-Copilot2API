@@ -27,6 +27,8 @@
   --green-bg:rgba(26,127,55,0.06);
   --orange:#bc4c00;
   --orange-bg:rgba(188,76,0,0.06);
+  --purple:#8250df;
+  --purple-bg:rgba(130,80,223,0.06);
   --red:#cf222e;
   --shadow:0 4px 16px rgba(0,0,0,.05);
   --shadow-lg:0 10px 30px rgba(0,0,0,.08);
@@ -53,6 +55,8 @@
     --green-bg:rgba(63,185,80,0.08);
     --orange:#f0883e;
     --orange-bg:rgba(240,136,62,0.08);
+    --purple:#bc8cff;
+    --purple-bg:rgba(188,140,255,0.08);
     --red:#f85149;
     --shadow:0 4px 16px rgba(0,0,0,.25);
     --shadow-lg:0 12px 36px rgba(0,0,0,.45);
@@ -370,6 +374,66 @@ h1{margin:6px 0 0;font-size:22px;line-height:1.35;font-weight:700;overflow-wrap:
 .tool-def-desc{font-size:12px;color:var(--muted);flex:1}
 .tool-def-params summary{cursor:pointer;font-size:11px;color:var(--muted);user-select:none;padding:3px 0}
 
+/* Registered Skills Card */
+.registered-skills-card{
+  border-color:color-mix(in srgb,var(--purple) 30%,var(--line));
+  background:color-mix(in srgb,var(--purple) 2.5%,var(--surface));
+}
+.registered-skills-summary{
+  background:color-mix(in srgb,var(--purple) 8%,var(--surface-2));
+  color:var(--purple);
+}
+.registered-skills-summary:hover{background:color-mix(in srgb,var(--purple) 12%,var(--surface-2))}
+.registered-skills-card .registered-tools-body{border-top:1px solid color-mix(in srgb,var(--purple) 20%,var(--line))}
+.skill-def-path{
+  display:inline-flex;
+  align-items:center;
+  gap:5px;
+  font-size:11px;
+  padding:2px 8px;
+  border-radius:5px;
+  background:var(--surface-2);
+  border:1px solid var(--line);
+  color:var(--muted);
+  max-width:100%;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+.skill-def-path code{
+  font-size:11px;
+  background:transparent;
+  padding:0;
+  border:none;
+  color:var(--muted);
+  font-family:var(--font-mono);
+}
+.skill-def-desc .markdown-body{font-size:12.5px;color:var(--text);line-height:1.6}
+.skill-def-desc .markdown-body p{margin:0 0 6px}
+.skill-def-desc .markdown-body p:last-child{margin-bottom:0}
+.skill-def-desc .markdown-body ul{margin:4px 0 6px 18px}
+
+/* Registered Router Card */
+.registered-router-card{
+  border-color:color-mix(in srgb,var(--green) 35%,var(--line));
+  background:color-mix(in srgb,var(--green) 2.5%,var(--surface));
+}
+.registered-router-summary{
+  background:color-mix(in srgb,var(--green) 8%,var(--surface-2));
+  color:var(--green);
+}
+.registered-router-summary:hover{background:color-mix(in srgb,var(--green) 12%,var(--surface-2))}
+.registered-router-card .registered-tools-body{border-top:1px solid color-mix(in srgb,var(--green) 20%,var(--line))}
+.router-rule-item{
+  display:flex;
+  align-items:flex-start;
+  gap:8px;
+  font-size:12.5px;
+  line-height:1.55;
+  color:var(--text);
+  padding:3px 0;
+}
+
 /* System Prompt Card */
 .system-prompt-card{
   margin:8px 0;
@@ -544,6 +608,9 @@ const localeText={
   'conversation id is required': {'zh-CN':'必须提供对话 ID','zh-TW':'必須提供對話 ID','ja':'会話 ID が必要です','ko':'대화 ID가 필요합니다','es':'Se requiere el ID de conversación','fr':'L\'ID de conversation est requis','de':'Konversations-ID ist erforderlich','pt-BR':'O ID da conversa é necessário','ru':'Требуется ID разговора','ar':'معرف المحادثة مطلوب'},
   'session not found': {'zh-CN':'会话未找到','zh-TW':'工作階段未找到','ja':'セッションが見つかりません','ko':'세션을 찾을 수 없습니다','es':'Sesión no encontrada','fr':'Session introuvable','de':'Sitzung nicht gefunden','pt-BR':'Sessão não encontrada','ru':'Сессия не найдена','ar':'الجلسة غير موجودة'},
   'Registered tools': {'zh-CN':'注册工具列表','zh-TW':'註冊工具列表','ja':'登録ツール一覧','ko':'등록된 도구 목록','es':'Herramientas registradas','fr':'Outils enregistrés','de':'Registrierte Tools','pt-BR':'Ferramentas registradas','ru':'Зарегистрированные инструменты','ar':'الأدوات المسجلة'},
+  'Available Skills': {'zh-CN':'可用技能列表 (Skills)','zh-TW':'可用技能列表 (Skills)','ja':'利用可能なスキル','ko':'사용 가능한 스킬','es':'Habilidades disponibles','fr':'Compétences disponibles','de':'Verfügbare Fähigkeiten','pt-BR':'Habilidades disponíveis','ru':'Доступные навыки','ar':'المهارات المتاحة'},
+  'Gateway Router Directives': {'zh-CN':'网关智能路由守则','zh-TW':'閘道智慧路由守則','ja':'ゲートウェイルーターディレクティブ','ko':'게이트웨이 라우터 지침','es':'Directivas del enrutador de puerta de enlace','fr':'Directives du routeur de passerelle','de':'Gateway-Router-Richtlinien','pt-BR':'Diretivas do roteador de gateway','ru':'Директивы маршрутизатора шлюза','ar':'توجيهات موجه البوابة'},
+  'Skill instruction': {'zh-CN':'技能指令说明','zh-TW':'技能指令說明','ja':'スキル指示','ko':'스킬 지침','es':'Instrucción de habilidad','fr':'Instruction de compétence','de':'Fähigkeitsanweisung','pt-BR':'Instrução de habilidade','ru':'Инструкция навыка','ar':'تعليمات المهارة'},
   'Parameters Schema': {'zh-CN':'参数规范 (Schema)','zh-TW':'參數規範 (Schema)','ja':'パラメータスキーマ','ko':'매개변수 스키마','es':'Esquema de parámetros','fr':'Schéma des paramètres','de':'Parameterschema','pt-BR':'Esquema de parâmetros','ru':'Схема параметров','ar':'مخطط المعلمات'},
   'administrator login required': {'zh-CN':'需要管理员登录','zh-TW':'需要管理員登入','ja':'管理者ログインが必要です','ko':'관리자 로그인이 필요합니다','es':'Se requiere inicio de sesión de administrador','fr':'Connexion administrateur requise','de':'Administrator-Anmeldung erforderlich','pt-BR':'Login de administrador necessário','ru':'Требуется вход администратора','ar':'مطلوب تسجيل دخول المسؤول'}
 };
@@ -863,6 +930,108 @@ function renderTools(tools){
   </details>`;
 }
 
+function extractSkills(messages){
+  if(!Array.isArray(messages))return [];
+  const skills=[];
+  const seen=new Set();
+
+  for(const msg of messages){
+    const content=typeof msg?.content==='string'?msg.content:'';
+    if(!content)continue;
+
+    let section = '';
+    const sm = /<skills>([\s\S]*?)<\/skills>/i.exec(content);
+    if(sm) {
+      const idx = sm[1].indexOf('Available skills:');
+      section = idx !== -1 ? sm[1].slice(idx) : sm[1];
+    } else {
+      const idx = content.indexOf('Available skills:');
+      if(idx !== -1) section = content.slice(idx);
+    }
+    if(!section) continue;
+
+    const lines = section.split(/\r?\n/);
+    let currentSkill = null;
+    const skillRegex = /^[-*]\s+([a-zA-Z0-9_\-\.]+)\s*(?:\(([^)]+)\))?\s*:\s*(.+)$/;
+
+    for(const rawLine of lines){
+      const line = rawLine.trim();
+      if(!line) continue;
+      if(line.startsWith('Available skills:') || line.startsWith('## Available skills')) continue;
+
+      const m = skillRegex.exec(line);
+      if(m){
+        const name = m[1].trim();
+        const lower = name.toLowerCase();
+        if(lower === 'scripts' || lower === 'examples' || lower === 'resources' || lower === 'references' || lower === 'skill.md') continue;
+        const path = (m[2]||'').trim();
+        const desc = m[3].trim();
+        if(!seen.has(name)){
+          seen.add(name);
+          currentSkill = {name, path, description: desc};
+          skills.push(currentSkill);
+        }
+      } else if(currentSkill){
+        if(line.startsWith('</skills>') || line.startsWith('```')){
+          currentSkill = null;
+          continue;
+        }
+        currentSkill.description += '\n' + rawLine;
+      }
+    }
+  }
+  return skills;
+}
+
+function renderSkills(skills){
+  if(!Array.isArray(skills)||!skills.length)return '';
+  const items=skills.map(s=>{
+    return `<div class="tool-def-item skill-def-item">
+      <div class="tool-def-header">
+        <span class="tool-def-name" style="color:var(--purple)">
+          <i data-lucide="sparkles" style="width:13px;height:13px"></i><code>${escapeHTML(s.name)}</code>
+        </span>
+        ${s.path?`<span class="skill-def-path" title="${escapeHTML(s.path)}"><i data-lucide="folder-code" style="width:12px;height:12px"></i><code>${escapeHTML(s.path)}</code></span>`:''}
+      </div>
+      <div class="skill-def-desc" style="margin-top:6px">
+        ${renderMarkdown(s.description)}
+      </div>
+    </div>`;
+  }).join('');
+  return `<details class="registered-tools-card registered-skills-card" open>
+    <summary class="registered-tools-summary registered-skills-summary">
+      <span style="display:flex;align-items:center;gap:7px"><i data-lucide="sparkles" style="width:15px;height:15px"></i><span>${translateText('Available Skills')} (${skills.length})</span></span>
+      <span style="font-size:11px;color:var(--muted)">${translateText('Click to expand/collapse')}</span>
+    </summary>
+    <div class="registered-tools-body">${items}</div>
+  </details>`;
+}
+
+function renderRouter(router){
+  if(!router||!router.rules||!router.rules.length)return '';
+  const rulesList=router.rules.map(r=>`
+    <div class="router-rule-item">
+      <i data-lucide="check-circle-2" style="width:14px;height:14px;color:var(--green);flex-shrink:0;margin-top:2px"></i>
+      <span>${escapeHTML(r)}</span>
+    </div>
+  `).join('');
+  const modeBadge = router.planningMode ? `<span style="font-size:11px;padding:2px 7px;border-radius:4px;background:color-mix(in srgb,var(--green) 15%,transparent);font-family:var(--font-mono);font-weight:600">${escapeHTML(router.planningMode.toUpperCase())}</span>` : '';
+  return `<details class="registered-tools-card registered-router-card" open>
+    <summary class="registered-tools-summary registered-router-summary">
+      <span style="display:flex;align-items:center;gap:7px">
+        <i data-lucide="compass" style="width:15px;height:15px"></i>
+        <span>${translateText('Gateway Router Directives')}</span>
+        ${modeBadge}
+      </span>
+      <span style="font-size:11px;color:var(--muted)">${translateText('Click to expand/collapse')}</span>
+    </summary>
+    <div class="registered-tools-body">
+      ${router.description?`<div style="font-size:12px;color:var(--muted);margin-bottom:8px;line-height:1.55">${escapeHTML(router.description)}</div>`:''}
+      <div class="router-rules-list">${rulesList}</div>
+    </div>
+  </details>`;
+}
+
 // Robust turn parser supporting both XML <turn role="..."> and legacy [role] tags
 function parseTurnsRobust(text){
   if(!text||typeof text!=='string')return [];
@@ -949,7 +1118,18 @@ function render(data){
   $('totalVisibleMessages').textContent=String(messages.length);
   const toolsSection=$('toolsSection');
   if(toolsSection){
-    toolsSection.innerHTML=renderTools(data.tools);
+    const skills=Array.isArray(data.skills)&&data.skills.length>0?data.skills:extractSkills(rawMessages.concat(messages));
+    let html='';
+    if(data.router){
+      html+=renderRouter(data.router);
+    }
+    if(Array.isArray(data.tools)&&data.tools.length>0){
+      html+=renderTools(data.tools);
+    }
+    if(skills.length>0){
+      html+=renderSkills(skills);
+    }
+    toolsSection.innerHTML=html;
     formatStandalonePreBlocks(toolsSection);
   }
   const timeline=$('timeline');
