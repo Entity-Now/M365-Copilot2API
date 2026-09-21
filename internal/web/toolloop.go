@@ -215,12 +215,24 @@ var toolRefusalPatterns = []string{
 	"无法直接访问",
 	"没有权限访问本地",
 	"无法修改本地文件",
+	"无法将文档写入",
+	"无法将文件写入",
+	"无法写入本地",
+	"没有读取到项目文件",
+	"未读取到项目文件",
+	"未读取到任何文件",
+	"无法读取项目文件",
+	"当前会话中没有读取到",
+	"无法做基于源码的可靠评估",
+	"暂时无法做基于源码",
+	"无法直接读取本地",
+	"无法查看本地文件",
+	"无法访问本地路径",
+	"无法直接在本地",
+	"不能直接操作本地",
 }
 
 func isToolRefusal(text string) bool {
-	if len(text) >= 1000 {
-		return false
-	}
 	low := strings.ToLower(text)
 	for _, p := range toolRefusalPatterns {
 		if strings.Contains(low, strings.ToLower(p)) {
@@ -250,6 +262,8 @@ var sandboxHallucinationPatterns = []string{
 	"python sandbox",
 	"sandbox environment",
 	"/mnt/data",
+	"/mnt/data 为空",
+	"/mnt/data is empty",
 	"linux container",
 	"linux sandbox",
 	"cloud sandbox",
@@ -270,6 +284,18 @@ var sandboxHallucinationPatterns = []string{
 	"I don't have SSH access tools",
 	"I don't have any tools",
 	"none of which can reach",
+	"打包为 zip",
+	"打包为zip",
+	"上传 zip",
+	"upload a zip",
+	"upload as zip",
+	"upload zip",
+	"upload a .zip",
+	"请将项目目录打包",
+	"请将项目打包",
+	"打包上传",
+	"上传项目文件",
+	"上传源代码",
 }
 
 func isSandboxHallucination(text string) bool {

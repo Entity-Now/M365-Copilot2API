@@ -65,3 +65,42 @@ func TestModelToolRouterPromptSufficientContextConstraint(t *testing.T) {
 	}
 }
 
+func TestParseModelToolDecisionRejectsSandboxHallucination(t *testing.T) {
+	text := `但当前会话中没有读取到项目文件，/mnt/data 为空，因此暂时无法做基于源码的可靠评估，也无法将文档写入你提到的项目根目录。请将项目目录打包为 ZIP 上传，或至少上传以下内容：
+
+- 主要源代码目录
+- README.md
+- requirements.txt、pyproject.toml 或其他依赖文件
+- UI 模板与静态资源
+- 配置文件及 .env.example，请勿上传真实密钥
+- 测试、Docker、CI/CD 等相关文件
+
+收到文件后，我会直接完成检查并生成类似 PROJECT_OPTIMIZATION_REVIEW.md 的报告，不需要你再逐步确认。`
+
+	calls, ok := parseModelToolDecision(text, testTools(), "auto")
+	if ok || len(calls) > 0 {
+		t.Fatalf("expected sandbox hallucination to be rejected, got ok=%v calls=%v", ok, calls)
+	}
+}
+
+func TestParseModelToolDecisionSingleObjectAndArrayJSON(t *testing.T) {
+	single := `{"name":"get_weather","arguments":{"city":"Beijing"}}`
+	calls, ok := parseModelToolDecision(single, testTools(), "auto")
+	if !ok || len(calls) != 1 || calls[0].Name != "get_weather" {
+		t.Fatalf("expected 1 call, got ok=%v calls=%v", ok, calls)
+	}
+
+	arr := `[{"name":"get_weather","arguments":{"city":"Beijing"}}]`
+	calls2, ok2 := parseModelToolDecision(arr, testTools(), "auto")
+	if !ok2 || len(calls2) != 1 || calls2[0].Name != "get_weather" {
+		t.Fatalf("expected 1 call from array, got ok=%v calls=%v", ok2, calls2)
+	}
+}
+
+func TestModelToolRouterPromptAntiSandbox(t *testing.T) {
+	p := modelToolRouterPrompt("analyze project files", testTools(), "auto")
+	if !strings.Contains(p, "NO SANDBOX") || !strings.Contains(p, "NO /mnt/data") || !strings.Contains(p, "ROUTER MANDATORY DIRECTIVE") {
+		t.Fatalf("expected anti-sandbox directives in router prompt: %s", p)
+	}
+}
+

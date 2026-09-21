@@ -1875,6 +1875,9 @@ func buildAnswerRequest(answerPrompt, tone string, body oaiReq, ledger agentLedg
 	if len(ledger.Completed) > 0 {
 		answerPrompt += "\nFINAL ANSWER RULE: Report only actions supported by completed tool results. If the goal is not fully verified, state exactly what remains unconfirmed."
 	}
+	if isToolRefusal(answerPrompt) || isSandboxHallucination(answerPrompt) || strings.Contains(answerPrompt, `:\`) {
+		answerPrompt += "\nENVIRONMENT NOTICE: You are connected to a local workspace host. Do NOT assume a cloud sandbox, Python container, or /mnt/data. Do NOT ask the user to upload ZIP archives."
+	}
 	req := chathub.Request{Text: answerPrompt, Tone: tone, ConversationID: body.ConversationID, SessionID: body.SessionID, Attachments: body.Attachments, LicenseType: cfg.LicenseType, Scenario: cfg.Scenario, FeatureFlags: flags, Locale: locale.Locale, Market: locale.Market, TimeZone: locale.TimeZone, TimeZoneOffset: locale.TimeZoneOffset, DeviceOS: locale.DeviceOS, DisableMemory: disableMemory}
 	// The audited HAR set does not contain a complete client-tool invocation
 	// lifecycle, stable call identifier, argument-delta contract, or tool-result
@@ -2160,7 +2163,40 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		}
 		s.dropTransientConversation(routeRes.ConversationID)
 		calls, parsed := parseModelToolDecision(routeRes.Text, toolMaps, body.ToolChoice)
+		if isSandboxHallucination(routeRes.Text) || isToolRefusal(routeRes.Text) {
+			log.Printf("[router-sandbox-eject] id=%s model hallucinated sandbox or refused tools: %q", requestID, compactToolResult(routeRes.Text, 120))
+			toolList := strings.Join(declaredToolNames(toolMaps), ", ")
+			defs, _ := json.Marshal(toolMaps)
+			correctionText := fmt.Sprintf(`CRITICAL CORRECTION:
+You incorrectly claimed that files cannot be accessed or that /mnt/data is required, or hallucinated a cloud sandbox/container.
+1. You are running as an internal tool router for a local host. There is NO sandbox and NO /mnt/data. Never ask to upload ZIP archives or project files.
+2. The caller's tools execute directly in their local environment with full access to local files, Windows drives (C:\...), and workspace paths.
+3. Real client tools available: [%s]
+Tool definitions: %s
+
+You MUST call the appropriate client tool now to inspect the workspace or perform the requested action.
+Do not provide explanations or chat text.
+
+User request:
+%s
+
+OUTPUT FORMAT:
+CALL_TOOL: tool_name({"arg1":"value1"})
+
+Decision:`, toolList, string(defs), prompt+"\n"+activeLedger.RouterContext())
+
+			retryRes, retryErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: correctionText, Tone: tone, Attachments: body.Attachments, LicenseType: toolCfg.LicenseType, Scenario: toolCfg.Scenario})
+			if retryErr == nil {
+				s.dropTransientConversation(retryRes.ConversationID)
+				routeRes = retryRes
+				calls, parsed = parseModelToolDecision(routeRes.Text, toolMaps, body.ToolChoice)
+			}
+		}
 		if !parsed {
+			if isSandboxHallucination(routeRes.Text) || isToolRefusal(routeRes.Text) {
+				writeOpenAIError(w, http.StatusBadGateway, "upstream_error", "model refused to call available tools and hallucinated sandbox")
+				return
+			}
 			repairRes, repairErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: `Repair this tool routing output into JSON only with shape {"calls":[{"name":"function_name","arguments":{}}]}. Do not invent calls; use {"calls":[]} if unrecoverable. OUTPUT:
 ` + compactToolResult(routeRes.Text, 6000), Tone: tone, Attachments: body.Attachments, LicenseType: toolCfg.LicenseType, Scenario: toolCfg.Scenario})
 			if repairErr == nil {
