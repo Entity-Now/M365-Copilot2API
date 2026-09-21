@@ -13,6 +13,8 @@ import (
 	"sync"
 	"time"
 
+	"m365-copilot2api/internal/chathub"
+
 	"github.com/google/uuid"
 )
 
@@ -29,7 +31,8 @@ type sessionBinding struct {
 	ContextFinger  string    `json:"contextFinger,omitempty"`
 	// ContextHistory persists the latest complete protocol history so prefix
 	// matching can continue after a process restart.
-	ContextHistory []oaiMsg `json:"contextHistory,omitempty"`
+	ContextHistory []oaiMsg       `json:"contextHistory,omitempty"`
+	Tools          []chathub.Tool `json:"tools,omitempty"`
 	// Tenant isolates a binding to the API key that created it. Every read,
 	// match, resume, and delete is scoped to the caller's tenant so one key can
 	// never touch another key's conversations. An empty tenant marks a legacy
@@ -405,6 +408,9 @@ func (sr *sessionResolver) Bind(sessionID, conversationID, accountID string, bod
 		sess.IPFingerprint = clientIPFingerprint(r)
 		sess.ContextFinger = contextFingerprint(history)
 		sess.ContextHistory = history
+		if len(body.Tools) > 0 {
+			sess.Tools = append([]chathub.Tool(nil), body.Tools...)
+		}
 		sess.Tenant = tenant
 		if explicitID != "" {
 			sess.ExplicitID = explicitID
@@ -417,6 +423,10 @@ func (sr *sessionResolver) Bind(sessionID, conversationID, accountID string, bod
 	if sessionID == "" {
 		sessionID = uuid.NewString()
 	}
+	var toolsCopy []chathub.Tool
+	if len(body.Tools) > 0 {
+		toolsCopy = append([]chathub.Tool(nil), body.Tools...)
+	}
 	sess := sessionBinding{
 		SessionID:      sessionID,
 		ConversationID: conversationID,
@@ -427,6 +437,7 @@ func (sr *sessionResolver) Bind(sessionID, conversationID, accountID string, bod
 		UserField:      body.User,
 		ContextFinger:  contextFingerprint(history),
 		ContextHistory: history,
+		Tools:          toolsCopy,
 		Tenant:         tenant,
 		ExplicitID:     explicitID,
 	}
@@ -466,6 +477,9 @@ func (sr *sessionResolver) GetConversation(tenant, conversationID string) (sessi
 	for _, session := range sr.sessions {
 		if session.Tenant == tenant && session.ConversationID == conversationID {
 			session.ContextHistory = cloneMessages(session.ContextHistory)
+			if len(session.Tools) > 0 {
+				session.Tools = append([]chathub.Tool(nil), session.Tools...)
+			}
 			return session, true
 		}
 	}
@@ -481,11 +495,16 @@ func (sr *sessionResolver) GetConversationByID(conversationID string) (sessionBi
 		if session.ConversationID != conversationID {
 			continue
 		}
-		if matched && found.AccountID != session.AccountID {
-			return sessionBinding{}, false
+		if !matched || session.LastUsedAt.After(found.LastUsedAt) {
+			found = session
+			matched = true
 		}
-		found = session
-		matched = true
+	}
+	if matched {
+		found.ContextHistory = cloneMessages(found.ContextHistory)
+		if len(found.Tools) > 0 {
+			found.Tools = append([]chathub.Tool(nil), found.Tools...)
+		}
 	}
 	return found, matched
 }

@@ -1934,7 +1934,6 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	}
 	// Rebuild a protocol-neutral evidence ledger from actual tool calls/results.
 	// Round limits apply only to the current user turn; full history still informs evidence.
-	ledger := buildAgentLedger(body.Messages)
 	activeLedger := buildAgentLedger(activeMessages(body.Messages))
 	if err := activeLedger.CanContinue(maxToolRounds()); err != nil {
 		w.Header().Set("Content-Type", "application/json")
@@ -2927,9 +2926,6 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 			res.Text = strings.TrimSpace(res.Text) + "\n\n![image](" + imgURL + ")"
 		}
 	}
-	if len(toolMaps) > 0 && !completionEvidenceAllows(res.Text, ledger) {
-		res.Text = "I cannot confirm completion because no matching tool results were returned. No external action has been verified."
-	}
 	res.Text = sanitizePublicAssistantTextForModel(res.Text, body.Model)
 	res.Reasoning = sanitizePublicReasoningText(res.Reasoning)
 	log.Printf("[debug] res.Text bytes=%d content=%q", len(res.Text), res.Text)
@@ -3124,7 +3120,7 @@ func (s *Server) bindConversation(acc auth.AccountToken, body *oaiReq, r *http.R
 		ReasoningContent: res.Reasoning,
 	})
 	s.sessionResolver.Bind(res.SessionID, res.ConversationID, acc.ID, &historyBody, "", r)
-	s.conversationManager.Record(res.ConversationID, acc.ID, prompt)
+	s.conversationManager.Record(res.ConversationID, acc.ID, conversationTitle(body.Messages))
 	if s.conversationManager.ShouldCleanup() {
 		if cleaned := s.conversationManager.Cleanup(); len(cleaned) > 0 {
 			log.Printf("[conversation-manager] auto-cleaned %d conversations", len(cleaned))

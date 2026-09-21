@@ -3,6 +3,7 @@ package web
 import (
 	"encoding/json"
 	"net/http"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -219,10 +220,24 @@ func (s *Server) handleM365ConversationDetail(w http.ResponseWriter, r *http.Req
 		return
 	}
 	session, found := s.sessionResolver.GetConversation(tenantFromRequest(r), conversationID)
+	if !found {
+		session, found = s.sessionResolver.GetConversationByID(conversationID)
+	}
 	if found {
 		accountEmail := ""
 		if account, ok := s.tokens.Get(session.AccountID); ok {
 			accountEmail = account.Email
+		}
+		var parsedTools []map[string]any
+		for _, t := range session.Tools {
+			var fn map[string]any
+			if len(t.Function) > 0 {
+				_ = json.Unmarshal(t.Function, &fn)
+			}
+			parsedTools = append(parsedTools, map[string]any{
+				"type":     t.Type,
+				"function": fn,
+			})
 		}
 		jsonOut(w, map[string]any{
 			"object":         "conversation",
@@ -235,6 +250,7 @@ func (s *Server) handleM365ConversationDetail(w http.ResponseWriter, r *http.Req
 			"updatedAt":      session.LastUsedAt,
 			"messageCount":   len(session.ContextHistory),
 			"messages":       session.ContextHistory,
+			"tools":          parsedTools,
 		})
 		return
 	}
@@ -262,6 +278,7 @@ func (s *Server) handleM365ConversationDetail(w http.ResponseWriter, r *http.Req
 					"updatedAt":      conv.UpdatedAt,
 					"messageCount":   0,
 					"messages":       []any{},
+					"tools":          []any{},
 				})
 				return
 			}
@@ -293,6 +310,7 @@ func (s *Server) handleM365ConversationDetail(w http.ResponseWriter, r *http.Req
 				"updatedAt":      managed.LastUsedAt,
 				"messageCount":   0,
 				"messages":       []any{},
+				"tools":          []any{},
 			})
 			return
 		}
@@ -303,33 +321,77 @@ func (s *Server) handleM365ConversationDetail(w http.ResponseWriter, r *http.Req
 		"object":         "conversation",
 		"conversationId": conversationID,
 		"sessionId":      conversationID,
-		"accountId":      "",
+		"accountId":      "-",
 		"accountEmail":   "-",
-		"chatName":       "M365 云端对话",
-		"createdAt":      time.Now(),
-		"updatedAt":      time.Now(),
+		"chatName":       "M365 对话",
+		"createdAt":      time.Now().UTC(),
+		"updatedAt":      time.Now().UTC(),
 		"messageCount":   0,
-		"messages":       []map[string]any{{"role": "system", "content": "对话元数据来自于微软 M365 云端。消息上下文在本地未做日志留存或已随 Session 过期。"}},
+		"messages":       []any{},
+		"tools":          []any{},
 	})
+}
+
+var titleXMLTagRegex = regexp.MustCompile(`<[^>]+>`)
+var titleAnthropicHeaderRegex = regexp.MustCompile(`(?i)x-anthropic-[^;]+;`)
+
+func cleanTitleCandidate(s string) string {
+	s = titleAnthropicHeaderRegex.ReplaceAllString(s, " ")
+	s = titleXMLTagRegex.ReplaceAllString(s, " ")
+	s = strings.Join(strings.Fields(s), " ")
+	return strings.TrimSpace(s)
 }
 
 func conversationTitle(messages []oaiMsg) string {
 	for _, message := range messages {
-		if message.Role != "user" {
+		if message.Role != "user" && message.Role != "" {
 			continue
 		}
-		text := strings.TrimSpace(contentToString(message.Content))
-		text = strings.Join(strings.Fields(text), " ")
+		raw := strings.TrimSpace(contentToString(message.Content))
+		if raw == "" {
+			continue
+		}
+		candidate := raw
+		if idx := strings.Index(candidate, `<turn role="user">`); idx >= 0 {
+			sub := candidate[idx+len(`<turn role="user">`):]
+			if end := strings.Index(sub, "</turn>"); end >= 0 {
+				candidate = sub[:end]
+			} else {
+				candidate = sub
+			}
+		} else if idx := strings.Index(candidate, `[user]`); idx >= 0 {
+			sub := candidate[idx+len(`[user]`):]
+			if end := strings.Index(sub, "\n["); end >= 0 {
+				candidate = sub[:end]
+			} else {
+				candidate = sub
+			}
+		}
+		text := cleanTitleCandidate(candidate)
 		if text == "" {
 			continue
 		}
 		runes := []rune(text)
-		if len(runes) > 120 {
-			return string(runes[:120]) + "..."
+		if len(runes) > 60 {
+			return string(runes[:60]) + "..."
 		}
 		return text
 	}
-	return "Untitled conversation"
+	// Fallback: search non-system messages
+	for _, message := range messages {
+		if message.Role == "system" || message.Role == "developer" {
+			continue
+		}
+		text := cleanTitleCandidate(contentToString(message.Content))
+		if text != "" {
+			runes := []rune(text)
+			if len(runes) > 60 {
+				return string(runes[:60]) + "..."
+			}
+			return text
+		}
+	}
+	return "未命名对话"
 }
 
 func conversationTimestamp(row map[string]any) int64 {

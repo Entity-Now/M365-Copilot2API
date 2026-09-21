@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"m365-copilot2api/internal/auth"
+	"m365-copilot2api/internal/chathub"
 )
 
 func TestConversationListAndDetailUseCompleteLocalHistory(t *testing.T) {
@@ -117,3 +118,91 @@ func TestM365CloudRefreshTokenChangeInvalidatesCachedAccessToken(t *testing.T) {
 		t.Fatalf("cached access token was not invalidated")
 	}
 }
+
+func TestConversationTitleCleaning(t *testing.T) {
+	tests := []struct {
+		name     string
+		messages []oaiMsg
+		want     string
+	}{
+		{
+			name: "xml turn with session tag",
+			messages: []oaiMsg{
+				{Role: "system", Content: "x-anthropic-billing-header: cc_version=2.1; You are a Claude agent..."},
+				{Role: "user", Content: `<turn role="user"> <session> 我想学一下现在完成时的英语 </session> </turn>`},
+			},
+			want: "我想学一下现在完成时的英语",
+		},
+		{
+			name: "bracket turn format",
+			messages: []oaiMsg{
+				{Role: "user", Content: "[user]\nHow does garbage collection work in Go?"},
+			},
+			want: "How does garbage collection work in Go?",
+		},
+		{
+			name: "plain user text",
+			messages: []oaiMsg{
+				{Role: "user", Content: "Hello world"},
+			},
+			want: "Hello world",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := conversationTitle(tt.messages)
+			if got != tt.want {
+				t.Fatalf("conversationTitle() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestConversationDetailAdminLookupAndTools(t *testing.T) {
+	dir := t.TempDir()
+	store, _ := auth.OpenStore(filepath.Join(dir, "accounts.json"))
+	s := &Server{tokens: store, sessionResolver: openSessionResolver()}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	req.Header.Set("Authorization", "Bearer user-key")
+	body := &oaiReq{
+		Messages: []oaiMsg{
+			{Role: "user", Content: "test prompt"},
+			{Role: "assistant", Content: "test answer"},
+		},
+	}
+	// Add tool
+	body.Tools = []chathub.Tool{
+		{Type: "function", Function: []byte(`{"name":"bash","description":"Execute command"}`)},
+	}
+	s.sessionResolver.Bind("", "admin-test-conv", "account-a", body, "", req)
+
+	// Admin call has no Authorization header
+	adminReq := httptest.NewRequest(http.MethodGet, "/api/m365/conversations/detail?id=admin-test-conv", nil)
+	rec := httptest.NewRecorder()
+	s.handleM365ConversationDetail(rec, adminReq)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var res struct {
+		ConversationID string           `json:"conversationId"`
+		Messages       []oaiMsg         `json:"messages"`
+		Tools          []map[string]any `json:"tools"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
+		t.Fatal(err)
+	}
+	if res.ConversationID != "admin-test-conv" || len(res.Messages) != 2 {
+		t.Fatalf("unexpected detail: %+v", res)
+	}
+	if len(res.Tools) != 1 {
+		t.Fatalf("expected 1 tool in detail, got %d", len(res.Tools))
+	}
+	fn, _ := res.Tools[0]["function"].(map[string]any)
+	if fn["name"] != "bash" {
+		t.Fatalf("expected tool bash, got %v", fn["name"])
+	}
+}
+

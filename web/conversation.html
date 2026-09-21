@@ -342,6 +342,34 @@ h1{margin:6px 0 0;font-size:22px;line-height:1.35;font-weight:700;overflow-wrap:
 .tool-call-badge{margin-left:auto;font-size:11px;font-weight:500;color:var(--muted);font-family:var(--font-mono)}
 .tool-call-body{padding:10px 12px}
 
+/* Registered Tools Card */
+.registered-tools-card{
+  margin:10px 0 16px 0;
+  border:1px solid color-mix(in srgb,var(--accent) 30%,var(--line));
+  border-radius:10px;
+  background:color-mix(in srgb,var(--accent) 2.5%,var(--surface));
+  overflow:hidden;
+}
+.registered-tools-summary{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  padding:10px 14px;
+  background:color-mix(in srgb,var(--accent) 8%,var(--surface-2));
+  font-size:12px;
+  font-weight:700;
+  color:var(--accent);
+  cursor:pointer;
+  user-select:none;
+}
+.registered-tools-summary:hover{background:color-mix(in srgb,var(--accent) 12%,var(--surface-2))}
+.registered-tools-body{padding:12px 14px;display:flex;flex-direction:column;gap:10px;border-top:1px solid color-mix(in srgb,var(--accent) 20%,var(--line))}
+.tool-def-item{padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:var(--surface)}
+.tool-def-header{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:6px}
+.tool-def-name{font-weight:700;color:var(--text);display:flex;align-items:center;gap:6px;font-family:var(--font-mono);font-size:13px}
+.tool-def-desc{font-size:12px;color:var(--muted);flex:1}
+.tool-def-params summary{cursor:pointer;font-size:11px;color:var(--muted);user-select:none;padding:3px 0}
+
 /* System Prompt Card */
 .system-prompt-card{
   margin:8px 0;
@@ -457,6 +485,8 @@ h1{margin:6px 0 0;font-size:22px;line-height:1.35;font-weight:700;overflow-wrap:
       <div class="timeline-meta-summary" id="searchSummary">共 <span id="totalVisibleMessages">0</span> 条消息</div>
     </div>
 
+    <div id="toolsSection"></div>
+
     <section class="timeline" id="timeline"></section>
   </div>
   <section id="jsonView" class="raw" hidden>
@@ -513,6 +543,8 @@ const localeText={
   'conversation history is not available': {'zh-CN':'对话历史不可用','zh-TW':'對話歷史不可用','ja':'会話履歴を利用できません','ko':'대화 기록을 사용할 수 없습니다','es':'El historial de conversación no está disponible','fr':'L\'historique de conversation n\'est pas disponible','de':'Konversationsverlauf ist nicht verfügbar','pt-BR':'O histórico da conversa não está disponível','ru':'История разговора недоступна','ar':'سجل المحادثة غير متاح'},
   'conversation id is required': {'zh-CN':'必须提供对话 ID','zh-TW':'必須提供對話 ID','ja':'会話 ID が必要です','ko':'대화 ID가 필요합니다','es':'Se requiere el ID de conversación','fr':'L\'ID de conversation est requis','de':'Konversations-ID ist erforderlich','pt-BR':'O ID da conversa é necessário','ru':'Требуется ID разговора','ar':'معرف المحادثة مطلوب'},
   'session not found': {'zh-CN':'会话未找到','zh-TW':'工作階段未找到','ja':'セッションが見つかりません','ko':'세션을 찾을 수 없습니다','es':'Sesión no encontrada','fr':'Session introuvable','de':'Sitzung nicht gefunden','pt-BR':'Sessão não encontrada','ru':'Сессия не найдена','ar':'الجلسة غير موجودة'},
+  'Registered tools': {'zh-CN':'注册工具列表','zh-TW':'註冊工具列表','ja':'登録ツール一覧','ko':'등록된 도구 목록','es':'Herramientas registradas','fr':'Outils enregistrés','de':'Registrierte Tools','pt-BR':'Ferramentas registradas','ru':'Зарегистрированные инструменты','ar':'الأدوات المسجلة'},
+  'Parameters Schema': {'zh-CN':'参数规范 (Schema)','zh-TW':'參數規範 (Schema)','ja':'パラメータスキーマ','ko':'매개변수 스키마','es':'Esquema de parámetros','fr':'Schéma des paramètres','de':'Parameterschema','pt-BR':'Esquema de parâmetros','ru':'Схема параметров','ar':'مخطط المعلمات'},
   'administrator login required': {'zh-CN':'需要管理员登录','zh-TW':'需要管理員登入','ja':'管理者ログインが必要です','ko':'관리자 로그인이 필요합니다','es':'Se requiere inicio de sesión de administrador','fr':'Connexion administrateur requise','de':'Administrator-Anmeldung erforderlich','pt-BR':'Login de administrador necessário','ru':'Требуется вход администратора','ar':'مطلوب تسجيل دخول المسؤول'}
 };
 function preferredLocale(){
@@ -668,7 +700,7 @@ function contentHTML(content,role){
   if(typeof content==='string'){
     if(role==='system'||role==='developer'){
       if(content.length>160){
-        return `<details class="system-prompt-card">
+        return `<details class="system-prompt-card" open>
           <summary class="system-prompt-summary">
             <span style="display:flex;align-items:center;gap:6px"><i data-lucide="shield-alert" style="width:14px;height:14px"></i><span>${translateText('System prompt')} (${content.length} 字符)</span></span>
             <span style="font-size:11px;color:var(--muted)">${translateText('Click to expand/collapse')}</span>
@@ -685,7 +717,7 @@ function contentHTML(content,role){
       }).trim();
       let html='';
       if(reminderText){
-        html+=`<details class="system-prompt-card" style="margin-bottom:12px">
+        html+=`<details class="system-prompt-card" open style="margin-bottom:12px">
           <summary class="system-prompt-summary">
             <span style="display:flex;align-items:center;gap:6px"><i data-lucide="paperclip" style="width:13px;height:13px"></i><span>${translateText('System reminder')} (${reminderText.length} 字符)</span></span>
             <span style="font-size:11px;color:var(--muted)">${translateText('Click to expand/collapse')}</span>
@@ -755,6 +787,7 @@ function messageHTML(message,index){
   const role=String(message?.role||'message').toLowerCase();
   const meta=roleMeta(role);
   const reasoning=message?.reasoning_content;
+  const toolIdBadge=message?.tool_call_id?`<span class="tool-call-badge" style="font-size:11px;color:var(--muted);font-family:var(--font-mono)">ID: ${escapeHTML(message.tool_call_id)}</span>`:'';
   return `<article class="message-card ${escapeHTML(role)}" data-message-index="${index}">
     <div class="message-header">
       <div class="author-info">
@@ -762,6 +795,7 @@ function messageHTML(message,index){
         <span class="author-name">${escapeHTML(meta.name)}</span>
         <span class="role-badge">${escapeHTML(meta.badge)}</span>
         <span class="message-index">#${index+1}</span>
+        ${toolIdBadge}
       </div>
       <div class="message-actions">
         <button class="msg-btn" type="button" title="复制此条消息" onclick="copyMessageText(${index})">
@@ -795,75 +829,93 @@ function formatStandalonePreBlocks(container){
   });
 }
 
-// Unpack flattened prompt strings (both new XML <turn> format and legacy [tag] bracket format)
-function parseXMLTurns(text){
-  const turns=[];
-  const turnRegex=/<turn\s+role=["']([^"']+)["'](?:\s+tool_call_id=["']([^"']+)["'])?>([\s\S]*?)<\/turn>/gi;
-  let match;
-  while((match=turnRegex.exec(text))!==null){
-    const role=match[1].toLowerCase().trim();
-    const toolCallId=match[2]||'';
-    let inner=match[3]||'';
-    const turnObj={role:role,content:'',tool_call_id:toolCallId,tool_calls:null,reasoning_content:''};
-    const thoughtMatch=/<thought>([\s\S]*?)<\/thought>/i.exec(inner);
-    if(thoughtMatch){
-      turnObj.reasoning_content=thoughtMatch[1].trim();
-      inner=inner.replace(thoughtMatch[0],'').trim();
-    }
-    const toolCallsMatch=/<tool_calls>([\s\S]*?)<\/tool_calls>/i.exec(inner);
-    if(toolCallsMatch){
-      try{turnObj.tool_calls=JSON.parse(toolCallsMatch[1].trim());}
-      catch(_){turnObj.tool_calls=[{function:{name:'tool',arguments:toolCallsMatch[1].trim()}}];}
-      inner=inner.replace(toolCallsMatch[0],'').trim();
-    }
-    turnObj.content=inner.trim();
-    turns.push(turnObj);
-  }
-  return turns;
+function renderTools(tools){
+  if(!Array.isArray(tools)||!tools.length)return '';
+  const items=tools.map(tool=>{
+    const fn=tool.function||{};
+    const name=fn.name||tool.name||'tool';
+    const desc=fn.description||tool.description||'';
+    const params=fn.parameters||tool.parameters||{};
+    const paramsFormatted=typeof params==='object'?JSON.stringify(params,null,2):String(params);
+    return `<div class="tool-def-item">
+      <div class="tool-def-header">
+        <span class="tool-def-name"><i data-lucide="wrench" style="width:13px;height:13px"></i><code>${escapeHTML(name)}</code></span>
+        ${desc?`<span class="tool-def-desc">${escapeHTML(desc)}</span>`:''}
+      </div>
+      <details class="tool-def-params">
+        <summary>${translateText('Parameters Schema')}</summary>
+        <div class="code-block" style="margin-top:6px">
+          <div class="code-head">
+            <span class="code-lang">json schema</span>
+            <button class="code-copy-btn" type="button" onclick="copyCode(this)"><i data-lucide="copy"></i><span>${translateText('Copy')}</span></button>
+          </div>
+          <pre><code class="language-json">${escapeHTML(paramsFormatted)}</code></pre>
+        </div>
+      </details>
+    </div>`;
+  }).join('');
+  return `<details class="registered-tools-card" open>
+    <summary class="registered-tools-summary">
+      <span style="display:flex;align-items:center;gap:7px"><i data-lucide="boxes" style="width:15px;height:15px"></i><span>${translateText('Registered tools')} (${tools.length})</span></span>
+      <span style="font-size:11px;color:var(--muted)">${translateText('Click to expand/collapse')}</span>
+    </summary>
+    <div class="registered-tools-body">${items}</div>
+  </details>`;
 }
 
-function parseBracketTurns(text){
+// Robust turn parser supporting both XML <turn role="..."> and legacy [role] tags
+function parseTurnsRobust(text){
+  if(!text||typeof text!=='string')return [];
+  const tagRegex=/(?:<turn\s+role=["']?([^"'>\s]+)["']?(?:\s+tool_call_id=["']?([^"'>\s]+)["']?)?[^>]*>)|(?:(?:^|\r?\n)\[(system|developer|user|assistant|assistant tool_calls|tool result(?: id=[^\]]+)?)\](?:\s+|\r?\n|$))/gi;
+  const matches=[];
+  let m;
+  while((m=tagRegex.exec(text))!==null){
+    const isXML=!!m[1];
+    const role=isXML?m[1].toLowerCase().trim():m[3].toLowerCase().trim();
+    const toolCallId=isXML?(m[2]||''):'';
+    matches.push({index:m.index,length:m[0].length,role,toolCallId,isXML});
+  }
+  if(matches.length===0)return [];
   const turns=[];
-  const regex=/(?:^|\r?\n)\[(system|developer|user|assistant|assistant tool_calls|tool result(?: id=[^\]]+)?)\](?:\s+|\r?\n|$)/gi;
-  const segments=[];
-  let lastIndex=0;
-  let match;
-  let currentTag=null;
-  while((match=regex.exec(text))!==null){
-    if(currentTag!==null){
-      const content=text.slice(lastIndex,match.index).trim();
-      segments.push({tag:currentTag,content});
-    }
-    currentTag=match[1];
-    lastIndex=regex.lastIndex;
-  }
-  if(currentTag!==null&&lastIndex<=text.length){
-    segments.push({tag:currentTag,content:text.slice(lastIndex).trim()});
-  }
-  for(const seg of segments){
-    const rawTag=seg.tag.toLowerCase();
-    const content=seg.content;
-    if(rawTag==='assistant tool_calls'){
-      let parsed=null;
-      try{parsed=JSON.parse(content);}catch(_){}
-      const prev=turns[turns.length-1];
-      if(prev&&prev.role==='assistant'&&!prev.tool_calls){
-        prev.tool_calls=parsed||[{function:{name:'tool',arguments:content}}];
-        if(prev.content==='<nil>')prev.content='';
-      }else{
-        turns.push({role:'assistant',content:'',tool_calls:parsed||[{function:{name:'tool',arguments:content}}]});
+  for(let i=0;i<matches.length;i++){
+    const cur=matches[i];
+    const start=cur.index+cur.length;
+    const end=(i+1<matches.length)?matches[i+1].index:text.length;
+    let content=text.slice(start,end).trim();
+    content=content.replace(/<\/turn>\s*$/i,'').trim();
+
+    let rawRole=cur.role;
+    let toolCallId=cur.toolCallId;
+    let toolCalls=null;
+    let reasoning='';
+
+    if(!cur.isXML){
+      if(rawRole.startsWith('tool result')){
+        const idM=/id=([^\]\s]+)/i.exec(rawRole);
+        toolCallId=idM?idM[1]:'';
+        rawRole='tool';
+      }else if(rawRole==='assistant tool_calls'){
+        rawRole='assistant';
+        try{toolCalls=JSON.parse(content);}catch(_){toolCalls=[{function:{name:'tool',arguments:content}}];}
+        content='';
       }
-    }else if(rawTag.startsWith('tool result')){
-      const idMatch=/id=([^\]\s]+)/i.exec(seg.tag);
-      turns.push({role:'tool',tool_call_id:idMatch?idMatch[1]:'',content:content});
-    }else if(rawTag==='assistant'){
-      const isNil=content==='<nil>'||!content;
-      turns.push({role:'assistant',content:isNil?'':content});
-    }else if(rawTag==='system'||rawTag==='developer'){
-      turns.push({role:rawTag,content:content});
-    }else if(rawTag==='user'){
-      turns.push({role:'user',content:content});
     }
+
+    const thoughtM=/<thought>([\s\S]*?)<\/thought>/i.exec(content);
+    if(thoughtM){
+      reasoning=thoughtM[1].trim();
+      content=content.replace(thoughtM[0],'').trim();
+    }
+
+    const tcM=/<tool_calls>([\s\S]*?)<\/tool_calls>/i.exec(content);
+    if(tcM){
+      try{toolCalls=JSON.parse(tcM[1].trim());}
+      catch(_){toolCalls=[{function:{name:'tool',arguments:tcM[1].trim()}}];}
+      content=content.replace(tcM[0],'').trim();
+    }
+
+    if(rawRole==='assistant'&&content==='<nil>')content='';
+    turns.push({role:rawRole,content,tool_call_id:toolCallId,tool_calls:toolCalls,reasoning_content:reasoning});
   }
   return turns;
 }
@@ -873,13 +925,10 @@ function unflattenMessages(rawMessages){
   const result=[];
   for(const item of rawMessages){
     const rawContent=typeof item?.content==='string'?item.content:'';
-    const hasXMLTurns=/<turn\s+role=["'][^"']+["']/i.test(rawContent);
+    const hasXMLTurns=/<turn\s+role=["']?[^"'>\s]+/i.test(rawContent);
     const hasBracketTurns=/(?:^|\r?\n)\[(system|developer|user|assistant|tool result)[^\]]*\](?:\s+|\r?\n|$)/i.test(rawContent);
-    if(hasXMLTurns){
-      const parsed=parseXMLTurns(rawContent);
-      if(parsed.length>0){result.push(...parsed);continue;}
-    }else if(hasBracketTurns){
-      const parsed=parseBracketTurns(rawContent);
+    if(hasXMLTurns||hasBracketTurns){
+      const parsed=parseTurnsRobust(rawContent);
       if(parsed.length>0){result.push(...parsed);continue;}
     }
     result.push(item);
@@ -898,6 +947,11 @@ function render(data){
   state.unflattenedMessages=messages;
   $('messageCount').textContent=String(messages.length);
   $('totalVisibleMessages').textContent=String(messages.length);
+  const toolsSection=$('toolsSection');
+  if(toolsSection){
+    toolsSection.innerHTML=renderTools(data.tools);
+    formatStandalonePreBlocks(toolsSection);
+  }
   const timeline=$('timeline');
   timeline.innerHTML=messages.length?messages.map(messageHTML).join(''):`<div class="empty">${translateText('No messages yet')}</div>`;
   formatStandalonePreBlocks(timeline);
