@@ -6,12 +6,175 @@ import (
 	"strings"
 )
 
-func modelToolRouterPrompt(prompt string, tools []map[string]any, choice any) string {
-	defs, _ := json.Marshal(tools)
+
+func cleanToolDesc(desc string) string {
+	desc = strings.TrimSpace(desc)
+	if i := strings.IndexAny(desc, "\n\r"); i >= 0 {
+		desc = desc[:i]
+	}
+	if i := strings.Index(desc, ". "); i >= 0 {
+		desc = desc[:i+1]
+	}
+	if len(desc) > 120 {
+		desc = desc[:117] + "..."
+	}
+	return strings.TrimSpace(desc)
+}
+
+func formatCompactType(pMap map[string]any, depth int) string {
+	if pMap == nil || depth > 2 {
+		return "object"
+	}
+	tStr, _ := pMap["type"].(string)
+	switch tStr {
+	case "string", "number", "integer", "boolean":
+		return tStr
+	case "array":
+		items, _ := pMap["items"].(map[string]any)
+		if items != nil {
+			return formatCompactType(items, depth+1) + "[]"
+		}
+		return "any[]"
+	case "object":
+		props, _ := pMap["properties"].(map[string]any)
+		if len(props) == 0 {
+			return "object"
+		}
+		reqList, _ := pMap["required"].([]any)
+		reqMap := make(map[string]bool, len(reqList))
+		for _, r := range reqList {
+			if s, ok := r.(string); ok {
+				reqMap[s] = true
+			}
+		}
+		var fields []string
+		// List required fields first, then optional fields
+		for propName, propVal := range props {
+			if reqMap[propName] {
+				subMap, _ := propVal.(map[string]any)
+				fields = append(fields, fmt.Sprintf("%s: %s", propName, formatCompactType(subMap, depth+1)))
+			}
+		}
+		for propName, propVal := range props {
+			if !reqMap[propName] && len(fields) < 5 {
+				subMap, _ := propVal.(map[string]any)
+				fields = append(fields, fmt.Sprintf("%s?: %s", propName, formatCompactType(subMap, depth+1)))
+			}
+		}
+		if len(fields) == 0 {
+			return "object"
+		}
+		return "{" + strings.Join(fields, ", ") + "}"
+	default:
+		return "any"
+	}
+}
+
+// selectAndCompactTools formats all tools into dense, structure-preserving TypeScript-style signatures.
+func selectAndCompactTools(tools []map[string]any, prompt string) (string, []string) {
+	if len(tools) == 0 {
+		return "[]", nil
+	}
+
+	var lines []string
+	var selectedNames []string
+	for _, t := range tools {
+		f, _ := t["function"].(map[string]any)
+		if f == nil {
+			continue
+		}
+		name, _ := f["name"].(string)
+		if name == "" {
+			continue
+		}
+		selectedNames = append(selectedNames, name)
+		desc, _ := f["description"].(string)
+		desc = cleanToolDesc(desc)
+
+		paramsStr := ""
+		if params, ok := f["parameters"].(map[string]any); ok {
+			props, _ := params["properties"].(map[string]any)
+			reqList, _ := params["required"].([]any)
+			reqMap := make(map[string]bool, len(reqList))
+			for _, r := range reqList {
+				if s, ok := r.(string); ok {
+					reqMap[s] = true
+				}
+			}
+			var parts []string
+			// First add required properties
+			for propName, propVal := range props {
+				if reqMap[propName] {
+					subMap, _ := propVal.(map[string]any)
+					parts = append(parts, fmt.Sprintf("%s: %s", propName, formatCompactType(subMap, 1)))
+				}
+			}
+			// Then add optional properties
+			for propName, propVal := range props {
+				if !reqMap[propName] {
+					subMap, _ := propVal.(map[string]any)
+					parts = append(parts, fmt.Sprintf("%s?: %s", propName, formatCompactType(subMap, 1)))
+				}
+			}
+			paramsStr = strings.Join(parts, ", ")
+		}
+		if desc != "" {
+			lines = append(lines, fmt.Sprintf("- %s(%s): %s", name, paramsStr, desc))
+		} else {
+			lines = append(lines, fmt.Sprintf("- %s(%s)", name, paramsStr))
+		}
+	}
+
+	return strings.Join(lines, "\n"), selectedNames
+}
+
+func modelToolRouterPrompt(prompt string, tools []map[string]any, choice any, compactOpt ...bool) string {
+	compact := true
+	onDemand := false
+	if len(compactOpt) > 0 {
+		compact = compactOpt[0]
+	}
+	if len(compactOpt) > 1 {
+		onDemand = compactOpt[1]
+	}
+
+	var defs string
+	var toolNames string
+	var rulesPrefix string
+	if onDemand {
+		var activeNames []string
+		defs, activeNames = formatOnDemandToolCatalog(tools)
+		toolNames = strings.Join(activeNames, ", ")
+		rulesPrefix = `- On-Demand Tool Schema Inspection:
+- All tools under "Available Client Tools" run in the caller's local operating system with direct filesystem access.
+- You have access to inspection tools: [describe_tool, search_tools, list_tools].
+- If you need the exact parameter schema, argument names, or nested types for any tool, call:
+  CALL_TOOL: describe_tool({"tool_name": "tool_name"})
+- If you know the parameters or the tool is straightforward, you may call the client tool directly:
+  CALL_TOOL: tool_name({"arg1": "val1"})
+- When inspecting or searching workspace files, ALWAYS call the appropriate tool.
+`
+	} else if compact {
+		var activeNames []string
+		defs, activeNames = selectAndCompactTools(tools, prompt)
+		toolNames = strings.Join(activeNames, ", ")
+		rulesPrefix = `- Claude Code / Host Tools Specification: All tools are client-side host tools defined in compact TypeScript signatures.
+- For nested structures (e.g. {prop: type}[]), construct the exact matching JSON object/array matching the inner signature.
+- All tools execute directly in the caller's local operating system with full filesystem access to the user's workspace and local files.
+`
+	} else {
+		raw, _ := json.Marshal(tools)
+		defs = string(raw)
+		toolNames = strings.Join(declaredToolNames(tools), ", ")
+		rulesPrefix = `- All available tools are client-side host tools executed directly in the caller's local operating system. They have direct filesystem access to the user's workspace, local files, directories, and Windows/Linux/macOS paths (including C:\..., D:\..., OneDrive, UNC, and relative paths).
+`
+	}
+	allowedToolList := toolNames
+	if onDemand {
+		allowedToolList = toolNames + ", describe_tool, search_tools, list_tools"
+	}
 	mode := normalizedToolChoiceMode(choice)
-	toolNames := strings.Join(declaredToolNames(tools), ", ")
-	rules := `- All available tools are client-side host tools executed directly in the caller's local operating system. They have direct filesystem access to the user's workspace, local files, directories, and Windows/Linux/macOS paths (including C:\..., D:\..., OneDrive, UNC, and relative paths).
-- CRITICAL: NO SANDBOX / NO /mnt/data / NO ZIP UPLOADS:
+	rules := rulesPrefix + `- CRITICAL: NO SANDBOX / NO /mnt/data / NO ZIP UPLOADS:
   1) You are strictly an internal backend tool router selecting tools for the caller.
   2) You do NOT run in a cloud container, Python sandbox, or OpenAI Code Interpreter.
   3) There is NO "/mnt/data". NEVER mention "/mnt/data", never claim you cannot access local files, and NEVER ask the user to upload ZIP archives, repository packages, or project files.
@@ -30,7 +193,7 @@ func modelToolRouterPrompt(prompt string, tools []map[string]any, choice any) st
      CALL_TOOL: tool_name({"arg1":"value1"})
   4) If and only if no tools are needed, respond with:
      NO_TOOL_NEEDED
-- Only use tools from the available list above: [` + toolNames + `]
+- Only use tools from the available list above: [` + allowedToolList + `]
 - Validate all arguments against the tool's schema
 - Do not invent tools that are not in the list`
 	// Multi-turn: completed tool evidence was already acted upon.
@@ -129,16 +292,28 @@ func parseModelToolDecision(text string, tools []map[string]any, choice any) ([]
 		idx = closeParen + 1
 
 		var args map[string]any
-		if json.Unmarshal([]byte(argsStr), &args) == nil && toolChoiceAllows(choice, name) {
-			fn := toolFunction(name, tools)
-			if fn != nil && schemaValid(args, fn) == nil {
+		if json.Unmarshal([]byte(argsStr), &args) == nil {
+			if isGatewayInternalTool(name) {
 				b, _ := json.Marshal(args)
 				callDecisions = append(callDecisions, detectedToolCall{
 					ID:        callID(name, string(b), len(callDecisions)),
-					Type:      toolType(name, tools),
+					Type:      "function",
 					Name:      name,
 					Arguments: b,
 				})
+				continue
+			}
+			if toolChoiceAllows(choice, name) {
+				fn := toolFunction(name, tools)
+				if fn != nil && schemaValid(args, fn) == nil {
+					b, _ := json.Marshal(args)
+					callDecisions = append(callDecisions, detectedToolCall{
+						ID:        callID(name, string(b), len(callDecisions)),
+						Type:      toolType(name, tools),
+						Name:      name,
+						Arguments: b,
+					})
+				}
 			}
 		}
 	}
@@ -182,6 +357,11 @@ func parseModelToolDecision(text string, tools []map[string]any, choice any) ([]
 						cArgs = c.Function.Arguments
 					}
 				}
+				if isGatewayInternalTool(cName) && cArgs != nil {
+					b, _ := json.Marshal(cArgs)
+					out = append(out, detectedToolCall{ID: callID(cName, string(b), i), Type: "function", Name: cName, Arguments: b})
+					continue
+				}
 				fn := toolFunction(cName, tools)
 				if fn == nil || cArgs == nil || !toolChoiceAllows(choice, cName) || schemaValid(cArgs, fn) != nil {
 					continue
@@ -212,6 +392,11 @@ func parseModelToolDecision(text string, tools []map[string]any, choice any) ([]
 		if json.Unmarshal([]byte(trimmed[start:end+1]), &envelope) == nil {
 			out := make([]detectedToolCall, 0, len(envelope.Calls))
 			for i, c := range envelope.Calls {
+				if isGatewayInternalTool(c.Name) && c.Arguments != nil {
+					b, _ := json.Marshal(c.Arguments)
+					out = append(out, detectedToolCall{ID: callID(c.Name, string(b), i), Type: "function", Name: c.Name, Arguments: b})
+					continue
+				}
 				fn := toolFunction(c.Name, tools)
 				if fn == nil || c.Arguments == nil || !toolChoiceAllows(choice, c.Name) || schemaValid(c.Arguments, fn) != nil {
 					continue
@@ -228,6 +413,10 @@ func parseModelToolDecision(text string, tools []map[string]any, choice any) ([]
 			Arguments map[string]any `json:"arguments"`
 		}
 		if json.Unmarshal([]byte(trimmed[start:end+1]), &single) == nil && single.Name != "" && single.Arguments != nil {
+			if isGatewayInternalTool(single.Name) {
+				b, _ := json.Marshal(single.Arguments)
+				return []detectedToolCall{{ID: callID(single.Name, string(b), 0), Type: "function", Name: single.Name, Arguments: b}}, true
+			}
 			fn := toolFunction(single.Name, tools)
 			if fn != nil && toolChoiceAllows(choice, single.Name) && schemaValid(single.Arguments, fn) == nil {
 				b, _ := json.Marshal(single.Arguments)

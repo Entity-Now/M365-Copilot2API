@@ -104,3 +104,67 @@ func TestModelToolRouterPromptAntiSandbox(t *testing.T) {
 	}
 }
 
+func TestModelToolRouterPromptOnDemandCatalog(t *testing.T) {
+	p := modelToolRouterPrompt("what is the weather?", testTools(), "auto", true, true)
+	if !strings.Contains(p, "Gateway Inspection Tools") || !strings.Contains(p, "describe_tool") || !strings.Contains(p, "search_tools") {
+		t.Fatalf("expected on-demand inspection tools in prompt: %s", p)
+	}
+	if !strings.Contains(p, "- get_weather") {
+		t.Fatalf("expected get_weather client tool in catalog: %s", p)
+	}
+}
+
+func TestParseModelToolDecisionInternalGatewayTools(t *testing.T) {
+	text := `CALL_TOOL: describe_tool({"tool_name":"get_weather"})`
+	calls, ok := parseModelToolDecision(text, testTools(), "auto")
+	if !ok || len(calls) != 1 || calls[0].Name != "describe_tool" {
+		t.Fatalf("expected describe_tool call, got ok=%v calls=%v", ok, calls)
+	}
+
+	search := `CALL_TOOL: search_tools({"query":"weather"})`
+	calls2, ok2 := parseModelToolDecision(search, testTools(), "auto")
+	if !ok2 || len(calls2) != 1 || calls2[0].Name != "search_tools" {
+		t.Fatalf("expected search_tools call, got ok=%v calls=%v", ok2, calls2)
+	}
+
+	arr := `[{"name":"describe_tool","arguments":{"tool_name":"get_weather"}}]`
+	calls3, ok3 := parseModelToolDecision(arr, testTools(), "auto")
+	if !ok3 || len(calls3) != 1 || calls3[0].Name != "describe_tool" {
+		t.Fatalf("expected describe_tool from array, got ok=%v calls=%v", ok3, calls3)
+	}
+}
+
+func TestExecuteGatewayTool(t *testing.T) {
+	tools := testTools()
+
+	// describe_tool
+	call := detectedToolCall{
+		Name:      "describe_tool",
+		Arguments: []byte(`{"tool_name":"get_weather"}`),
+	}
+	res := executeGatewayTool(call, tools)
+	if !strings.Contains(res, "Full specification for tool \"get_weather\"") || !strings.Contains(res, "city") {
+		t.Fatalf("unexpected describe_tool result: %s", res)
+	}
+
+	// search_tools
+	callSearch := detectedToolCall{
+		Name:      "search_tools",
+		Arguments: []byte(`{"query":"weather"}`),
+	}
+	resSearch := executeGatewayTool(callSearch, tools)
+	if !strings.Contains(resSearch, "Matching tools") || !strings.Contains(resSearch, "get_weather") {
+		t.Fatalf("unexpected search_tools result: %s", resSearch)
+	}
+
+	// list_tools
+	callList := detectedToolCall{
+		Name: "list_tools",
+	}
+	resList := executeGatewayTool(callList, tools)
+	if !strings.Contains(resList, "Available client tools") || !strings.Contains(resList, "get_weather") {
+		t.Fatalf("unexpected list_tools result: %s", resList)
+	}
+}
+
+

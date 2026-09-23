@@ -69,6 +69,8 @@ type runtimeSettings struct {
 	EnableDesignerImageGen4o   bool           `json:"enableDesignerImageGen4o"`
 	EnableCodeCanvas           bool           `json:"enableCodeCanvas"`
 	EnableSydneyReconnect      bool           `json:"enableSydneyReconnect"`
+	EnableCompactToolRouter    bool           `json:"enableCompactToolRouter"`
+	EnableOnDemandToolSchema   bool           `json:"enableOnDemandToolSchema"`
 }
 
 type settingsStore struct {
@@ -108,6 +110,8 @@ func defaultRuntimeSettings() runtimeSettings {
 		EnableDesignerImageGen4o:   os.Getenv("M365_ENABLE_DESIGNER_IMAGE_GEN_4O") == "true",
 		EnableCodeCanvas:           os.Getenv("M365_ENABLE_CODE_CANVAS") == "true",
 		EnableSydneyReconnect:      os.Getenv("M365_ENABLE_SYDNEY_RECONNECT") == "true",
+		EnableCompactToolRouter:    os.Getenv("M365_ENABLE_COMPACT_TOOL_ROUTER") != "false",
+		EnableOnDemandToolSchema:   os.Getenv("M365_ENABLE_ON_DEMAND_TOOL_SCHEMA") != "false",
 	}
 }
 func settingsPath() string {

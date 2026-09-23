@@ -2137,8 +2137,13 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	// Ask the upstream model to select and validate the next tool. The gateway
 	// remains tool-agnostic; it only validates and serializes the decision.
 	if planningMode == "router" && len(toolMaps) > 0 && fmt.Sprint(body.ToolChoice) != "none" {
-		routePrompt := modelToolRouterPrompt(prompt+"\n"+activeLedger.RouterContext(), toolMaps, body.ToolChoice)
-		routeRes, routeErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: routePrompt, Tone: tone, Attachments: body.Attachments, LicenseType: toolCfg.LicenseType, Scenario: toolCfg.Scenario})
+		useCompact := s.settings.get().EnableCompactToolRouter
+		useOnDemand := s.settings.get().EnableOnDemandToolSchema
+		if (useCompact || useOnDemand) && isTrivialGreeting(prompt) && len(activeLedger.Completed) == 0 && fmt.Sprint(body.ToolChoice) != "required" {
+			log.Printf("[router-fastpath] id=%s skipping router for trivial greeting prompt=%q", requestID, prompt)
+		} else {
+			routePrompt := modelToolRouterPrompt(prompt+"\n"+activeLedger.RouterContext(), toolMaps, body.ToolChoice, useCompact, useOnDemand)
+			routeRes, routeErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: routePrompt, Tone: tone, Attachments: body.Attachments, LicenseType: toolCfg.LicenseType, Scenario: toolCfg.Scenario})
 		if routeErr != nil {
 			if requestedAccountID == "" && (IsRateLimited(routeErr) || IsAuthFailure(routeErr)) {
 				if s.accountPool != nil {
@@ -2226,6 +2231,66 @@ Decision:`, toolList, string(defs), prompt+"\n"+activeLedger.RouterContext())
 				return
 			}
 		}
+
+		// Gateway-internal inspection loop: if the model invoked describe_tool or search_tools,
+		// execute locally in Go and re-prompt the model with the exact tool schema.
+		for round := 0; round < 3; round++ {
+			var internalCall *detectedToolCall
+			for i := range calls {
+				if isGatewayInternalTool(calls[i].Name) {
+					internalCall = &calls[i]
+					break
+				}
+			}
+			if internalCall == nil {
+				break
+			}
+
+			output := executeGatewayTool(*internalCall, toolMaps)
+			log.Printf("[gateway-tool] id=%s round=%d tool=%s output_len=%d", requestID, round+1, internalCall.Name, len(output))
+
+			inspectionPrompt := fmt.Sprintf(`%s
+
+[GATEWAY TOOL INSPECTION]
+Tool Call: %s(%s)
+Inspection Result:
+%s
+
+DECISION REQUIRED:
+Now select and output the appropriate next client tool call to proceed, or respond with NO_TOOL_NEEDED if no further action is required.
+OUTPUT FORMAT:
+CALL_TOOL: tool_name({"arg1":"value1"})
+
+Decision:`, routePrompt, internalCall.Name, string(internalCall.Arguments), output)
+
+			nextRes, nextErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{
+				Text:        inspectionPrompt,
+				Tone:        tone,
+				Attachments: body.Attachments,
+				LicenseType: toolCfg.LicenseType,
+				Scenario:    toolCfg.Scenario,
+			})
+			if nextErr != nil {
+				log.Printf("[gateway-tool] id=%s round=%d error: %v", requestID, round+1, nextErr)
+				break
+			}
+			s.dropTransientConversation(nextRes.ConversationID)
+			routeRes = nextRes
+			calls, parsed = parseModelToolDecision(routeRes.Text, toolMaps, body.ToolChoice)
+			if !parsed {
+				break
+			}
+		}
+
+		// Never return internal gateway tools to the client agent
+		var clientCalls []detectedToolCall
+		for _, c := range calls {
+			if !isGatewayInternalTool(c.Name) {
+				clientCalls = append(clientCalls, c)
+			}
+		}
+		calls = clientCalls
+
 		calls = filterCompletedCalls(calls, activeLedger)
 		calls, _ = validateCalls("router", calls)
 		if len(calls) > 0 {
@@ -2266,6 +2331,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 			}
 			writeOpenAIError(w, http.StatusBadGateway, "upstream_error", "model did not select a required tool after constrained retry")
 			return
+		}
 		}
 	}
 	if body.Stream {
