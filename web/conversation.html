@@ -1028,6 +1028,15 @@ function renderRouter(router){
     <div class="registered-tools-body">
       ${router.description?`<div style="font-size:12px;color:var(--muted);margin-bottom:8px;line-height:1.55">${escapeHTML(router.description)}</div>`:''}
       <div class="router-rules-list">${rulesList}</div>
+      ${router.promptTemplate?`
+        <details style="margin-top:12px;border-top:1px dashed var(--line);padding-top:10px">
+          <summary style="font-size:12px;font-weight:600;color:var(--accent);cursor:pointer;display:flex;align-items:center;gap:6px">
+            <i data-lucide="code" style="width:13px;height:13px"></i>
+            <span>查看网关前置 Router 完整提示词指令模板 (Router Prompt Template)</span>
+          </summary>
+          <pre style="margin-top:8px;padding:10px 12px;background:var(--code-bg);color:var(--code-text);border-radius:6px;font-size:11.5px;font-family:var(--font-mono);white-space:pre-wrap;line-height:1.55;max-height:280px;overflow-y:auto">${escapeHTML(router.promptTemplate)}</pre>
+        </details>
+      `:''}
     </div>
   </details>`;
 }

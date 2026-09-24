@@ -212,6 +212,9 @@ func validateSettings(v runtimeSettings) error {
 	if strings.TrimSpace(v.Scenario) == "" {
 		return fmt.Errorf("场景标识不能为空")
 	}
+	if !isValidToolPlanningMode(v.ToolPlanningMode) {
+		return fmt.Errorf("toolPlanningMode 必须为 router 或 router_slim")
+	}
 	return nil
 }
 func (s *settingsStore) get() runtimeSettings { s.mu.RLock(); defer s.mu.RUnlock(); return s.v }

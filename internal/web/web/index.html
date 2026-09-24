@@ -9,6 +9,8 @@ body{background:var(--bg);color:var(--text);font-family:"Inter","SF Pro Display"
 @keyframes slideUp{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
 @keyframes scaleIn{from{opacity:0;transform:scale(0.95)}to{opacity:1;transform:scale(1)}}
 @keyframes springIn{from{opacity:0;transform:scale(0.9) translateY(8px)}to{opacity:1;transform:scale(1) translateY(0)}}
+@keyframes spin{to{transform:rotate(360deg)}}
+.spin{animation:spin .8s linear infinite}
 
 /* Sidebar - Translucent material */
 .sidebar{width:var(--sidebar-w);background:var(--surface);-webkit-backdrop-filter:blur(30px) saturate(180%);backdrop-filter:blur(30px) saturate(180%);border-right:1px solid var(--line);padding:24px 14px 18px;flex-shrink:0;display:flex;flex-direction:column;transition:background .3s ease,border-color .3s ease;height:100vh;position:sticky;top:0;overflow-y:auto}
@@ -605,7 +607,8 @@ if (response.output_text) {
       <section id="page-conversations" style="display:none">
         <div class="page-head">
           <div><h2 class="page-title">Conversation management</h2><p class="page-sub">View and clean up M365 conversations</p></div>
-          <div style="display:flex;gap:8px">
+          <div style="display:flex;gap:8px;align-items:center">
+            <button class="btn" id="btnRefreshConv" onclick="refreshConversations()"><i data-lucide="refresh-cw" style="width:14px;height:14px"></i> Refresh</button>
             <button class="btn danger" onclick="cleanupAll()">Clean up all</button>
           </div>
         </div>
@@ -618,7 +621,10 @@ if (response.output_text) {
           <div class="term-body" id="termBody"></div>
         </div>
         <div class="card">
-          <div class="card-head"><span class="card-title">Conversation list</span></div>
+          <div class="card-head" style="display:flex;justify-content:space-between;align-items:center">
+            <span class="card-title">Conversation list</span>
+            <button class="btn-sm btn" onclick="refreshConversations()" title="Refresh"><i data-lucide="refresh-cw" style="width:13px;height:13px"></i></button>
+          </div>
           <table class="table"><thead><tr><th>Name</th><th>Messages</th><th>Account</th><th>Last updated</th><th>Actions</th></tr></thead><tbody id="convRows"><tr><td colspan="5" class="empty">Loading...</td></tr></tbody></table>
         </div>
       </section>
@@ -685,7 +691,7 @@ if (response.output_text) {
       <!-- Settings -->
       <section id="page-settings" style="display:none">
         <h2 style="font-size:18px;font-weight:700;margin-bottom:16px">Settings</h2>
-        <div class="card"><div class="card-body"><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px"><div class="form-group"><label class="form-label">Listen address</label><input class="form-input" id="setListen" placeholder="127.0.0.1:4141"></div><div class="form-group"><label class="form-label">Chat timeout (seconds)</label><input class="form-input" id="setTimeout" type="number" min="5" max="3600" placeholder="120"></div><div class="form-group"><label class="form-label" for="languageSelect">Language</label><select class="form-input" id="languageSelect"><option value="en">English</option><option value="zh-CN">简体中文</option><option value="zh-TW">繁體中文</option><option value="ja">日本語</option><option value="ko">한국어</option><option value="es">Español</option><option value="fr">Français</option><option value="de">Deutsch</option><option value="pt-BR">Português (Brasil)</option><option value="ru">Русский</option><option value="ar">العربية</option></select><p class="form-hint">Choose the language used by the administration console.</p></div></div><label style="display:flex;align-items:flex-start;gap:10px;margin-top:16px"><input id="setImageApi" type="checkbox" style="margin-top:3px"><span><b>Enable experimental image API</b><span class="form-hint" style="display:block">Disabled by default. Enable only after independently verifying the upstream image protocol and credentials.</span></span></label><div style="margin-top:16px"><button class="btn primary" onclick="saveSettings()">Save settings</button></div></div></div>
+        <div class="card"><div class="card-body"><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px"><div class="form-group"><label class="form-label">Listen address</label><input class="form-input" id="setListen" placeholder="127.0.0.1:4141"></div><div class="form-group"><label class="form-label">Chat timeout (seconds)</label><input class="form-input" id="setTimeout" type="number" min="5" max="3600" placeholder="120"></div><div class="form-group"><label class="form-label">Tool planning mode</label><select class="form-input" id="setToolPlanningMode"><option value="router">默认全量模式 (Router · 完整原始工具定义，不压缩体积)</option><option value="router_slim">精简模式 (Router Slim · 轻量单行摘要+按需多工具批量调用)</option></select><p class="form-hint">M365 上下文约 30k。默认模式提供完整原样 Tools；若注册工具较多且接近上下文上限时推荐使用精简模式。</p></div><div class="form-group"><label class="form-label" for="languageSelect">Language</label><select class="form-input" id="languageSelect"><option value="en">English</option><option value="zh-CN">简体中文</option><option value="zh-TW">繁體中文</option><option value="ja">日本語</option><option value="ko">한국어</option><option value="es">Español</option><option value="fr">Français</option><option value="de">Deutsch</option><option value="pt-BR">Português (Brasil)</option><option value="ru">Русский</option><option value="ar">العربية</option></select><p class="form-hint">Choose the language used by the administration console.</p></div></div><label style="display:flex;align-items:flex-start;gap:10px;margin-top:16px"><input id="setImageApi" type="checkbox" style="margin-top:3px"><span><b>Enable experimental image API</b><span class="form-hint" style="display:block">Disabled by default. Enable only after independently verifying the upstream image protocol and credentials.</span></span></label><div style="margin-top:16px"><button class="btn primary" onclick="saveSettings()">Save settings</button></div></div></div>
       </section>
     </div>
   </main>
@@ -1180,6 +1186,7 @@ const localeText={
   'Model test': {'zh-CN':'模型测试','zh-TW':'模型測試','ja':'モデルテスト','ko':'모델 테스트','es':'Prueba de modelo','fr':'Test de modèle','de':'Modelltest','pt-BR':'Teste de modelo','ru':'Тест модели','ar':'اختبار النموذج'},
   'Live quota': {'zh-CN':'实时额度','zh-TW':'即時額度','ja':'リアルタイム残量','ko':'실시간 할당량','es':'Cuota en tiempo real','fr':'Quota en temps réel','de':'Echtzeit-Kontingent','pt-BR':'Cota em tempo real','ru':'Квота в реальном времени','ar':'الحصة في الوقت الفعلي'},
   'Refresh': {'zh-CN':'刷新','zh-TW':'重新整理','ja':'更新','ko':'새로고침','es':'Actualizar','fr':'Actualiser','de':'Aktualisieren','pt-BR':'Atualizar','ru':'Обновить','ar':'تحديث'},
+  'Refreshed': {'zh-CN':'已刷新','zh-TW':'已重新整理','ja':'更新しました','ko':'새로고침 완료','es':'Actualizado','fr':'Actualisé','de':'Aktualisiert','pt-BR':'Atualizado','ru':'Обновлено','ar':'تم التحديث'},
   'No remaining quota data yet; waiting for the next request to write back': {'zh-CN':'暂无剩余额度数据，等待下一次请求回写','zh-TW':'暫無剩餘額度資料，等待下一次請求回寫','ja':'残量データはまだありません。次回のリクエストで書き戻されます','ko':'남은 할당량 데이터가 아직 없습니다. 다음 요청 시 기록됩니다','es':'Aún no hay datos de cuota restante; se escribirán tras la siguiente solicitud','fr':'Aucune donnée de quota restant pour le moment ; elle sera écrite après la prochaine requête','de':'Noch keine Daten zum Restkontingent; sie werden mit der nächsten Anfrage zurückgeschrieben','pt-BR':'Ainda não há dados de cota restante; serão gravados após a próxima solicitação','ru':'Данных об остатке квоты пока нет; они будут записаны после следующего запроса','ar':'لا توجد بيانات عن الحصة المتبقية بعد؛ ستُكتب بعد الطلب التالي'},
   'Gateway System Logs': {'zh-CN':'网关底层系统日志','zh-TW':'閘道底層系統日誌','ja':'ゲートウェイシステムログ','ko':'게이트웨이 시스템 로그','es':'Registros del sistema de puerta de enlace','fr':'Journaux système de passerelle','de':'Gateway-Systemprotokolle','pt-BR':'Logs do sistema do gateway','ru':'Системные логи шлюза','ar':'سجلات نظام البوابة'},
   'System Logs': {'zh-CN':'系统日志','zh-TW':'系統日誌','ja':'システムログ','ko':'시스템 로그','es':'Registros del sistema','fr':'Journaux système','de':'Systemprotokolle','pt-BR':'Logs do sistema','ru':'Системные логи','ar':'سجلات النظام'},
@@ -2101,8 +2108,9 @@ async function loadConversations(){
     const c=d.data||[];
     $('convRows').innerHTML=c.length?c.map(x=>{
       const id=String(x.conversationId||'');
+      const accId=String(x.accountId||'');
       const updated=x.updateTimeUtc||x.createTimeUtc;
-      return `<tr class="conv-row" data-conversation-id="${esc(id)}">
+      return `<tr class="conv-row" data-conversation-id="${esc(id)}" data-account-id="${esc(accId)}">
         <td><button class="conv-link" type="button">${esc(x.chatName||'未命名对话')}</button><div class="conv-meta"><code>${esc(id)}</code></div></td>
         <td>${Number(x.messageCount||0)}</td>
         <td>${esc(x.accountEmail||x.accountId||'-')}</td>
@@ -2113,7 +2121,7 @@ async function loadConversations(){
     $('convRows').querySelectorAll('.conv-row').forEach(row=>{
       row.addEventListener('click',event=>{
         const action=event.target.closest('[data-conv-action]')?.dataset.convAction;
-        if(action==='delete'){event.stopPropagation();deleteConv(row.dataset.conversationId);return;}
+        if(action==='delete'){event.stopPropagation();deleteConv(row.dataset.conversationId, row.dataset.accountId);return;}
         openConversation(row.dataset.conversationId);
       });
     });
@@ -2123,40 +2131,70 @@ async function loadConversations(){
 
 function openConversation(id){window.open('/conversation?id='+encodeURIComponent(id),'_blank','noopener');}
 
+async function refreshConversations(){
+  const btn=$('btnRefreshConv');
+  const icon=btn?.querySelector('svg, i');
+  if(icon)icon.classList.add('spin');
+  try{
+    await loadConversations();
+    showNotice(translateText('Refreshed')||'已刷新','success');
+  }catch(e){
+    showNotice(e.message,'error');
+  }finally{
+    if(icon)icon.classList.remove('spin');
+    try{lucide.createIcons();}catch(err){}
+  }
+}
+
 function termOpen(title){$('termTitle').textContent=title;$('termBody').innerHTML='';$('termBox').style.display='block';}
 function termLine(msg,cls){const d=document.createElement('div');if(cls)d.className=cls;d.textContent='> '+msg;$('termBody').appendChild(d);$('termBody').scrollTop=$('termBody').scrollHeight;}
 function termClear(){$('termBody').innerHTML='';}
 
-async function deleteConv(id){if(!confirm('确定删除此对话？'))return;try{await api('/api/m365/conversations/delete',{method:'POST',body:JSON.stringify({conversation_id:id})});showNotice('已删除','success');loadConversations();}catch(e){showNotice(e.message,'error');}}
+async function deleteConv(id, accountId){
+  if(!confirm('确定删除此对话？'))return;
+  try{
+    await api('/api/m365/conversations/delete',{method:'POST',body:JSON.stringify({conversation_id:id, account_id:accountId||''})});
+    showNotice('已删除','success');loadConversations();
+  }catch(e){showNotice(e.message,'error');}
+}
+
 async function cleanupAll(){
-  const total=confirm('确定清理所有对话？\n每条对话将逐一删除并在终端记录日志。');
+  const total=confirm('确定一键深度清理所有云端历史/闲置对话？\n系统将在服务端自动深度清空云端堆积对话。');
   if(!total)return;
   termOpen('cleanup — m365-copilot2api');
-  termLine('开始清理所有对话…');
-  let ok=0,fail=0,round=0;
-  for(round=1;round<=100;round++){
-    let d;
-    try{d=await api('/api/m365/conversations');}catch(e){termLine('获取对话列表失败：'+e.message,'err');break;}
-    const c=d.data||[];
-    if(!c.length){
-      termLine('Round '+round+': list is empty.','dim');
-      break;
+  termLine('正在向服务端发起一键深度清理请求…');
+  try{
+    const res=await api('/api/m365/conversations/cleanup-all',{method:'POST',body:JSON.stringify({keep_n:0, include_active:false})});
+    termLine('✓ 服务端深度清理完成：已成功删除 '+res.deleted+' 个云端历史对话。','ok');
+    showNotice('成功清理 '+res.deleted+' 个对话','success');
+    loadConversations();
+  }catch(e){
+    termLine('服务端快速清理失败：'+e.message+'，正在回退到逐条清理模式…','warn');
+    let ok=0,fail=0,round=0;
+    for(round=1;round<=100;round++){
+      let d;
+      try{d=await api('/api/m365/conversations');}catch(err){termLine('获取对话列表失败：'+err.message,'err');break;}
+      const c=d.data||[];
+      if(!c.length){
+        termLine('Round '+round+': list is empty.','dim');
+        break;
+      }
+      termLine('Round '+round+': found '+c.length+' conversations (paged loading)','dim');
+      for(let i=0;i<c.length;i++){
+        const x=c[i];
+        const name=x.chatName||'未命名';
+        termLine('['+(i+1)+'/'+c.length+'] Deleting "'+name+'" '+String(x.conversationId||'').slice(0,8)+'…');
+        try{
+          await api('/api/m365/conversations/delete',{method:'POST',body:JSON.stringify({conversation_id:x.conversationId, account_id:x.accountId||''})});
+          termLine('✓ Deleted "'+name+'"','ok');ok++;
+        }catch(err){termLine('✗ Delete failed: '+err.message,'err');fail++;}
+        if(i< c.length-1)await new Promise(r=>setTimeout(r,100));
+      }
+      await new Promise(r=>setTimeout(r,300));
     }
-    termLine('Round '+round+': found '+c.length+' conversations (paged loading; fetch the next batch after deletion)','dim');
-    for(let i=0;i<c.length;i++){
-      const x=c[i];
-      const name=x.chatName||'未命名';
-      termLine('['+(i+1)+'/'+c.length+'] Deleting "'+name+'" '+String(x.conversationId||'').slice(0,8)+'…');
-      try{
-        await api('/api/m365/conversations/delete',{method:'POST',body:JSON.stringify({conversation_id:x.conversationId})});
-        termLine('✓ Deleted "'+name+'"','ok');ok++;
-      }catch(e){termLine('✗ Delete failed: '+e.message,'err');fail++;}
-      if(i< c.length-1)await new Promise(r=>setTimeout(r,150));
-    }
-    await new Promise(r=>setTimeout(r,500));
+    termLine('Finished: '+ok+' succeeded, '+fail+' failed, '+round+' rounds total.',fail?'warn':'ok');
+    showNotice('清理完成','success');loadConversations();
   }
-  termLine('Finished: '+ok+' succeeded, '+fail+' failed, '+round+' rounds total.',fail?'warn':'ok');
-  showNotice('清理完成','success');loadConversations();
 }
 
 function proxyRow(x){
@@ -2269,6 +2307,7 @@ async function loadSettings(){
     const v=d.settings||{};
     $('setListen').value=v.listenAddress||'';
     $('setTimeout').value=v.chatTimeoutSeconds||120;
+    $('setToolPlanningMode').value=v.toolPlanningMode||'router';
     $('setImageApi').checked=v.enableImageApi===true;
   }catch(e){showNotice(e.message,'error');}
 }
@@ -2279,6 +2318,7 @@ async function saveSettings(){
     const body={};
     if(listen)body.listenAddress=listen;
     if(timeout)body.chatTimeoutSeconds=parseInt(timeout);
+    body.toolPlanningMode=$('setToolPlanningMode').value;
     body.enableImageApi=$('setImageApi').checked;
     await api('/api/admin/settings',{method:'PUT',body:JSON.stringify(body)});
     showNotice('设置已保存','success');

@@ -239,6 +239,77 @@ func isToolRefusal(text string) bool {
 			return true
 		}
 	}
+
+	// 语义特征句匹配
+	specialPhrases := []string{
+		"关键限制",
+		"无法直接读取",
+		"无法直接访问",
+		"无法直接查看",
+		"无法直接扫描",
+		"无法直接获取",
+		"当前无法读取",
+		"当前无法访问",
+		"没有权限读取",
+		"没有权限访问",
+		"无法在本地",
+		"不能在本地",
+		"无法对本地",
+		"不能对本地",
+		"我无法读取你",
+		"我无法访问你",
+		"无法直接读取你",
+		"无法直接访问你",
+	}
+	for _, sp := range specialPhrases {
+		if strings.Contains(low, sp) {
+			return true
+		}
+	}
+
+	actionPrefixes := []string{"无法", "不能", "没有权限", "没权限", "当前无法", "暂时无法", "不可直接", "不能直接", "无法直接", "难以直接", "无法自行", "无法主动"}
+	actionVerbs := []string{"读取", "访问", "查看", "扫描", "获取", "操作", "打开", "写入", "修改", "编辑", "执行", "检视", "浏览"}
+	actionTargets := []string{"本地", "文件", "项目", "目录", "代码", "工程", "路径", "内容", "workspace", "磁盘"}
+
+	for _, pre := range actionPrefixes {
+		if idx := strings.Index(low, pre); idx >= 0 {
+			tail := low[idx+len(pre):]
+			if len(tail) > 120 {
+				tail = tail[:120]
+			}
+			hasVerb := false
+			for _, v := range actionVerbs {
+				if strings.Contains(tail, v) {
+					hasVerb = true
+					break
+				}
+			}
+			if hasVerb {
+				for _, tgt := range actionTargets {
+					if strings.Contains(tail, tgt) {
+						return true
+					}
+				}
+			}
+		}
+	}
+
+	enPrefixes := []string{"cannot", "can't", "unable to", "don't have access", "do not have access", "no access"}
+	enTargets := []string{"local", "file", "directory", "project", "workspace", "filesystem", "path"}
+	for _, pre := range enPrefixes {
+		if idx := strings.Index(low, pre); idx >= 0 {
+			tail := low[idx+len(pre):]
+			if len(tail) > 120 {
+				tail = tail[:120]
+			}
+			for _, tgt := range enTargets {
+				if strings.Contains(tail, tgt) {
+					return true
+				}
+			}
+		}
+	}
+
 	return false
 }
 

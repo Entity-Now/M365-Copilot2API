@@ -2,10 +2,20 @@ package web
 
 import "strings"
 
+const (
+	ToolPlanningModeRouter     = "router"
+	ToolPlanningModeRouterSlim = "router_slim"
+)
+
 func toolPlanningMode(raw string) string {
-	// HAR evidence does not contain a complete native client-tool invocation
-	// lifecycle or stable call identifier. Keep the verified router path as the
-	// only selectable mode instead of silently enabling an inferred protocol.
-	_ = strings.TrimSpace(raw)
-	return "router"
+	raw = strings.ToLower(strings.TrimSpace(raw))
+	if raw == ToolPlanningModeRouterSlim {
+		return ToolPlanningModeRouterSlim
+	}
+	return ToolPlanningModeRouter
+}
+
+func isValidToolPlanningMode(mode string) bool {
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	return mode == "" || mode == ToolPlanningModeRouter || mode == ToolPlanningModeRouterSlim
 }

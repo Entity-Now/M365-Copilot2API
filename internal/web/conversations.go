@@ -2,6 +2,7 @@ package web
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 	"regexp"
 	"sort"
@@ -431,24 +432,178 @@ func (s *Server) handleM365Delete(w http.ResponseWriter, r *http.Request) {
 	}
 	accountID := strings.TrimSpace(body.AccountID)
 	if accountID == "" {
-		session, ok := s.sessionResolver.GetConversationByID(body.ConversationID)
+		if session, ok := s.sessionResolver.GetConversationByID(body.ConversationID); ok {
+			accountID = session.AccountID
+		} else if s.conversationManager != nil {
+			s.conversationManager.mu.Lock()
+			if managed, ok := s.conversationManager.data[body.ConversationID]; ok {
+				accountID = managed.AccountID
+			}
+			s.conversationManager.mu.Unlock()
+		}
+	}
+
+	if accountID != "" {
+		client, ok := s.cloudClients.get(accountID)
 		if !ok {
-			writeOpenAIError(w, http.StatusConflict, "account_required", "account_id is required when the conversation owner is unknown or ambiguous")
+			writeOpenAIError(w, http.StatusServiceUnavailable, "m365_not_configured", "m365_cloud_not_configured")
 			return
 		}
-		accountID = session.AccountID
+		if err := client.DeleteConversation(body.ConversationID); err != nil {
+			writeOpenAIError(w, http.StatusBadGateway, "m365_error", err.Error())
+			return
+		}
+		s.dropConversation(body.ConversationID)
+		jsonOut(w, map[string]any{"status": "deleted", "conversation_id": body.ConversationID})
+		return
 	}
-	client, ok := s.cloudClients.get(accountID)
-	if !ok {
+
+	// 若 accountID 未知，但只有一个账号，直接在该账号下删除
+	if s.cloudClients != nil && s.cloudClients.len() == 1 {
+		var singleClient *M365CloudClient
+		for _, client := range s.cloudClients.list() {
+			singleClient = client
+			break
+		}
+		if singleClient != nil {
+			if err := singleClient.DeleteConversation(body.ConversationID); err != nil {
+				writeOpenAIError(w, http.StatusBadGateway, "m365_error", err.Error())
+				return
+			}
+			s.dropConversation(body.ConversationID)
+			jsonOut(w, map[string]any{"status": "deleted", "conversation_id": body.ConversationID})
+			return
+		}
+	}
+
+	// 若有多个账号且未指定，遍历所有账号尝试删除
+	if s.cloudClients != nil && s.cloudClients.len() > 1 {
+		var lastErr error
+		deleted := false
+		for _, client := range s.cloudClients.list() {
+			if err := client.DeleteConversation(body.ConversationID); err == nil {
+				deleted = true
+				break
+			} else {
+				lastErr = err
+			}
+		}
+		if deleted {
+			s.dropConversation(body.ConversationID)
+			jsonOut(w, map[string]any{"status": "deleted", "conversation_id": body.ConversationID})
+			return
+		}
+		if lastErr != nil {
+			writeOpenAIError(w, http.StatusBadGateway, "m365_error", lastErr.Error())
+			return
+		}
+	}
+
+	writeOpenAIError(w, http.StatusConflict, "account_required", "account_id is required when the conversation owner is unknown or ambiguous")
+}
+
+func (s *Server) handleM365CleanupAll(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
+		return
+	}
+	var body struct {
+		AccountID     string `json:"account_id"`
+		KeepN         int    `json:"keep_n"`
+		IncludeActive bool   `json:"include_active"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+
+	if s.cloudClients == nil || s.cloudClients.len() == 0 {
 		writeOpenAIError(w, http.StatusServiceUnavailable, "m365_not_configured", "m365_cloud_not_configured")
 		return
 	}
-	if err := client.DeleteConversation(body.ConversationID); err != nil {
-		writeOpenAIError(w, http.StatusBadGateway, "m365_error", err.Error())
-		return
+
+	targets := map[string]*M365CloudClient{}
+	if accID := strings.TrimSpace(body.AccountID); accID != "" {
+		if c, ok := s.cloudClients.get(accID); ok {
+			targets[accID] = c
+		} else {
+			writeOpenAIError(w, http.StatusBadRequest, "account_not_found", "specified account_id was not found")
+			return
+		}
+	} else {
+		targets = s.cloudClients.list()
 	}
-	s.dropConversation(body.ConversationID)
-	jsonOut(w, map[string]any{"status": "deleted", "conversation_id": body.ConversationID})
+
+	active := map[string]bool{}
+	if !body.IncludeActive {
+		active = s.activeConversationSet(2 * time.Hour)
+	}
+
+	keepN := body.KeepN
+	if keepN < 0 {
+		keepN = 0
+	}
+
+	totalDeleted := 0
+	type cand struct {
+		id       string
+		createMs int64
+	}
+
+	for _, client := range targets {
+		for round := 0; round < 100; round++ {
+			chats, err := client.ListConversations()
+			if err != nil {
+				log.Printf("[cleanup-all] list conversations failed: %v", err)
+				break
+			}
+			if len(chats) == 0 {
+				break
+			}
+
+			var candidates []cand
+			for _, chat := range chats {
+				convID, _ := chat["conversationId"].(string)
+				if convID == "" {
+					continue
+				}
+				if !body.IncludeActive && active[convID] {
+					continue
+				}
+				createMs, ok := parseChatTimestampMs(chat)
+				if !ok {
+					createMs = 0
+				}
+				candidates = append(candidates, cand{id: convID, createMs: createMs})
+			}
+
+			if len(candidates) == 0 {
+				break
+			}
+
+			sort.Slice(candidates, func(i, j int) bool {
+				return candidates[i].createMs > candidates[j].createMs
+			})
+
+			anyDeleted := false
+			for i := keepN; i < len(candidates); i++ {
+				cid := candidates[i].id
+				if err := client.DeleteConversation(cid); err != nil {
+					log.Printf("[cleanup-all] failed to delete %s: %v", cid, err)
+					continue
+				}
+				s.dropConversation(cid)
+				totalDeleted++
+				anyDeleted = true
+			}
+
+			if !anyDeleted {
+				break
+			}
+		}
+	}
+
+	jsonOut(w, map[string]any{
+		"status":  "cleaned",
+		"deleted": totalDeleted,
+	})
 }
 
 func (s *Server) handleM365Cleanup(w http.ResponseWriter, r *http.Request) {
@@ -606,12 +761,19 @@ func getRouterDirectivesInfo(planningMode string, hasTools bool) map[string]any 
 		"充分上下文保障：在得出结论或答复 NO_TOOL_NEEDED 之前，必须先读取所有必要的项目上下文文件。",
 		"独立决策通道：网关在后台通过独立瞬态通道前置执行工具调度判定，完成后释放瞬态会话，以避免污染客户端历史上下文。",
 	}
+	var promptTemplate string
+	if planningMode == "router_slim" {
+		promptTemplate = modelToolSlimRouterPrompt("[USER_REQUEST_AND_CONTEXT]", nil, "auto")
+	} else {
+		promptTemplate = modelToolRouterPrompt("[USER_REQUEST_AND_CONTEXT]", nil, "auto")
+	}
 	return map[string]any{
-		"planningMode": planningMode,
-		"enabled":      hasTools && planningMode == "router",
-		"title":        "网关智能路由守则 (Gateway Tool Router)",
-		"description":  "网关采用两阶段规划架构：在模型返回结果前，先通过独立瞬态通道进行工具选择决策，既确保工具调用的严谨性，又完全避免污染客户端的原生对话历史。",
-		"rules":        rules,
+		"planningMode":   planningMode,
+		"enabled":        hasTools && (planningMode == "router" || planningMode == "router_slim"),
+		"title":          "网关智能路由守则 (Gateway Tool Router)",
+		"description":    "网关采用两阶段规划架构：在模型返回结果前，先通过独立瞬态通道将 Router 提示词发送给模型进行前置工具决策。完成后立即释放瞬态会话，以确保工具调用的严谨性，同时完全避免污染下方客户端（如 Claude Code）的原生对话历史。",
+		"rules":          rules,
+		"promptTemplate": promptTemplate,
 	}
 }
 

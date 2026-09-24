@@ -190,3 +190,55 @@ func TestLegacyConversationFileLoads(t *testing.T) {
 		t.Error("legacy conversation file must still load")
 	}
 }
+
+func TestParseChatTimestampMs(t *testing.T) {
+	cases := []struct {
+		name     string
+		input    map[string]any
+		expected int64
+		ok       bool
+	}{
+		{
+			name:     "float64 timestamp",
+			input:    map[string]any{"createTimeUtc": float64(1700000000000)},
+			expected: 1700000000000,
+			ok:       true,
+		},
+		{
+			name:     "int64 timestamp",
+			input:    map[string]any{"createdTimeUtc": int64(1700000000000)},
+			expected: 1700000000000,
+			ok:       true,
+		},
+		{
+			name:     "string millis",
+			input:    map[string]any{"timestamp": "1700000000000"},
+			expected: 1700000000000,
+			ok:       true,
+		},
+		{
+			name:     "RFC3339 string",
+			input:    map[string]any{"createdAt": "2024-01-01T00:00:00Z"},
+			expected: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC).UnixMilli(),
+			ok:       true,
+		},
+		{
+			name:     "empty chat",
+			input:    map[string]any{},
+			expected: 0,
+			ok:       false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := parseChatTimestampMs(tc.input)
+			if ok != tc.ok {
+				t.Fatalf("expected ok=%v, got %v", tc.ok, ok)
+			}
+			if ok && got != tc.expected {
+				t.Fatalf("expected timestamp=%d, got %d", tc.expected, got)
+			}
+		})
+	}
+}

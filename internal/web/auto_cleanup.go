@@ -1,6 +1,7 @@
 package web
 
 import (
+	"encoding/json"
 	"log"
 	"os"
 	"sort"
@@ -62,6 +63,63 @@ func (s *Server) autoCleanupOnce(maxAge time.Duration, keepN int) {
 	}
 }
 
+func parseChatTimestampMs(chat map[string]any) (int64, bool) {
+	for _, key := range []string{
+		"createTimeUtc", "createdTimeUtc", "createTime", "createdTime",
+		"updateTimeUtc", "updatedTimeUtc", "timestamp", "createdAt", "updatedAt",
+	} {
+		v, exists := chat[key]
+		if !exists || v == nil {
+			continue
+		}
+		switch val := v.(type) {
+		case float64:
+			return int64(val), true
+		case int64:
+			return val, true
+		case int:
+			return int64(val), true
+		case json.Number:
+			if n, err := val.Int64(); err == nil {
+				return n, true
+			}
+			if f, err := val.Float64(); err == nil {
+				return int64(f), true
+			}
+		case string:
+			val = strings.TrimSpace(val)
+			if val == "" {
+				continue
+			}
+			if n, err := strconv.ParseInt(val, 10, 64); err == nil {
+				if n < 10000000000 {
+					return n * 1000, true
+				}
+				return n, true
+			}
+			if f, err := strconv.ParseFloat(val, 64); err == nil {
+				if f < 10000000000 {
+					return int64(f * 1000), true
+				}
+				return int64(f), true
+			}
+			layouts := []string{
+				time.RFC3339Nano,
+				time.RFC3339,
+				"2006-01-02T15:04:05.999999999",
+				"2006-01-02T15:04:05",
+				"2006-01-02 15:04:05",
+			}
+			for _, layout := range layouts {
+				if t, err := time.Parse(layout, val); err == nil {
+					return t.UnixMilli(), true
+				}
+			}
+		}
+	}
+	return 0, false
+}
+
 func (s *Server) autoCleanupAccount(accountID string, client *M365CloudClient, maxAge time.Duration, keepN int) {
 	now := time.Now()
 	active := s.activeConversationSet(maxAge)
@@ -98,13 +156,12 @@ func (s *Server) autoCleanupAccount(accountID string, client *M365CloudClient, m
 			if active[convID] {
 				continue
 			}
-			createMs, ok := chat["createTimeUtc"].(float64)
+			createInt, ok := parseChatTimestampMs(chat)
 			if !ok {
-				// 时间戳缺失或类型不符时不视为旧会话，避免误删刚创建的云端对话。
-				continue
+				// 未知时间戳的非活跃孤儿会话，视为最久远会话进入超时清理队列
+				createInt = 0
 			}
-			createInt := int64(createMs)
-			if nowMs-createInt > maxAge.Milliseconds() {
+			if createInt == 0 || nowMs-createInt > maxAge.Milliseconds() {
 				stale = append(stale, cand{convID, createInt})
 			} else {
 				rest = append(rest, cand{convID, createInt})
@@ -121,7 +178,8 @@ func (s *Server) autoCleanupAccount(accountID string, client *M365CloudClient, m
 			deleted++
 			anyDeleted = true
 		}
-		sort.Slice(rest, func(i, j int) bool { return rest[i].createMs < rest[j].createMs })
+		// 降序排序：最新创建/使用的排在前面，保留前 keepN 个，其余超出额度的旧会话全部删除
+		sort.Slice(rest, func(i, j int) bool { return rest[i].createMs > rest[j].createMs })
 		for i := keepN; i < len(rest); i++ {
 			c := rest[i]
 			if err := client.DeleteConversation(c.id); err != nil {

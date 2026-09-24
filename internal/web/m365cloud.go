@@ -279,16 +279,16 @@ func (c *M365CloudClient) CleanupOldConversations(maxAge time.Duration, keepN in
 		anyDeleted := false
 		for _, chat := range chats {
 			convID, _ := chat["conversationId"].(string)
-			createTime, ok := chat["createTimeUtc"].(float64)
 			if convID == "" {
 				continue
 			}
+			createInt, ok := parseChatTimestampMs(chat)
 			if !ok {
-				continue
+				createInt = 0
 			}
 
-			age := time.Duration(now-int64(createTime)) * time.Millisecond
-			if age > maxAge {
+			age := time.Duration(now-createInt) * time.Millisecond
+			if createInt == 0 || age > maxAge {
 				if err := c.DeleteConversation(convID); err != nil {
 					log.Printf("[m365-cloud] failed to delete %s: %v", convID, err)
 					continue

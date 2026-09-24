@@ -431,6 +431,7 @@ func (s *Server) Routes() http.Handler {
 	m.HandleFunc("/api/m365/conversations/detail", s.handleM365ConversationDetail)
 	m.HandleFunc("/api/m365/conversations/delete", s.handleM365Delete)
 	m.HandleFunc("/api/m365/conversations/cleanup", s.handleM365Cleanup)
+	m.HandleFunc("/api/m365/conversations/cleanup-all", s.handleM365CleanupAll)
 	m.HandleFunc("/api/stats", s.handleCacheStats)
 	m.HandleFunc("/api/stats/reset", s.handleCacheStatsReset)
 	m.HandleFunc("/api/usage", s.adminUsage)
@@ -1631,25 +1632,30 @@ func (s *Server) chatOnce(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// dropTransientConversation 异步删除 router/repair 轮创建的一次性云端对话，
+// dropTransientConversation 异步删除 router/repair/test 轮创建的一次性云端对话，
 // 避免每请求都往 M365 对话列表塞一条记录。删除失败不阻塞请求，留给 auto_cleanup 兜底。
-func (s *Server) dropTransientConversation(conversationID string) {
+func (s *Server) dropTransientConversation(accountID, conversationID string) {
 	if conversationID == "" || s.cloudClients == nil {
 		return
 	}
-	session, ok := s.sessionResolver.GetConversationByID(conversationID)
-	if !ok {
+	var client *M365CloudClient
+	var ok bool
+	if strings.TrimSpace(accountID) != "" {
+		client, ok = s.cloudClients.get(strings.TrimSpace(accountID))
+	}
+	if !ok || client == nil {
+		if session, found := s.sessionResolver.GetConversationByID(conversationID); found {
+			client, ok = s.cloudClients.get(session.AccountID)
+		}
+	}
+	if !ok || client == nil {
 		return
 	}
-	client, ok := s.cloudClients.get(session.AccountID)
-	if !ok {
-		return
-	}
-	go func(id string) {
-		if err := client.DeleteConversation(id); err != nil {
+	go func(id string, cl *M365CloudClient) {
+		if err := cl.DeleteConversation(id); err != nil {
 			log.Printf("[transient-conv] delete failed id=%s err=%v", id, err)
 		}
-	}(conversationID)
+	}(conversationID, client)
 }
 
 func (s *Server) adminModelSync(w http.ResponseWriter, r *http.Request) {
@@ -1719,6 +1725,9 @@ func (s *Server) adminModelTest(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeOpenAIError(w, http.StatusBadGateway, "m365_error", upstreamError(err))
 		return
+	}
+	if res.ConversationID != "" {
+		s.dropTransientConversation(acc.ID, res.ConversationID)
 	}
 	jsonOut(w, map[string]any{"ok": true, "model": b.Model, "reply": sanitizePublicAssistantTextForModel(res.Text, b.Model), "latency_ms": ms})
 }
@@ -1884,9 +1893,6 @@ func buildAnswerRequest(answerPrompt, tone string, body oaiReq, ledger agentLedg
 	}
 	if isToolRefusal(answerPrompt) || isSandboxHallucination(answerPrompt) || strings.Contains(answerPrompt, `:\`) {
 		answerPrompt += "\nENVIRONMENT NOTICE: You are connected to a local workspace host. Do NOT assume a cloud sandbox, Python container, or /mnt/data. Do NOT ask the user to upload ZIP archives."
-	}
-	if strings.Contains(answerPrompt, "<skills>") || strings.Contains(answerPrompt, "Available skills:") {
-		answerPrompt += "\nSKILLS NOTICE: If the user request relates to any registered skill in <skills>, you must use the appropriate file-reading tool to inspect its SKILL.md before answering."
 	}
 	req := chathub.Request{Text: answerPrompt, Tone: tone, ConversationID: body.ConversationID, SessionID: body.SessionID, Attachments: body.Attachments, LicenseType: cfg.LicenseType, Scenario: cfg.Scenario, FeatureFlags: flags, Locale: locale.Locale, Market: locale.Market, TimeZone: locale.TimeZone, TimeZoneOffset: locale.TimeZoneOffset, DeviceOS: locale.DeviceOS, DisableMemory: disableMemory}
 	// The audited HAR set does not contain a complete client-tool invocation
@@ -2136,8 +2142,14 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	// being an ordinary text question.
 	// Ask the upstream model to select and validate the next tool. The gateway
 	// remains tool-agnostic; it only validates and serializes the decision.
-	if planningMode == "router" && len(toolMaps) > 0 && fmt.Sprint(body.ToolChoice) != "none" {
-		routePrompt := modelToolRouterPrompt(prompt+"\n"+activeLedger.RouterContext(), toolMaps, body.ToolChoice)
+	if (planningMode == "router" || planningMode == "router_slim") && len(toolMaps) > 0 && fmt.Sprint(body.ToolChoice) != "none" {
+		var routePrompt string
+		if planningMode == "router_slim" {
+			routePrompt = modelToolSlimRouterPrompt(prompt+"\n"+activeLedger.RouterContext(), toolMaps, body.ToolChoice)
+		} else {
+			routePrompt = modelToolRouterPrompt(prompt+"\n"+activeLedger.RouterContext(), toolMaps, body.ToolChoice)
+		}
+		log.Printf("[req-trace] id=%s stage=router_start mode=%s prompt_len=%d tools=%d", requestID, planningMode, len(routePrompt), len(toolMaps))
 		routeRes, routeErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: routePrompt, Tone: tone, Attachments: body.Attachments, LicenseType: toolCfg.LicenseType, Scenario: toolCfg.Scenario})
 		if routeErr != nil {
 			if requestedAccountID == "" && (IsRateLimited(routeErr) || IsAuthFailure(routeErr)) {
@@ -2156,7 +2168,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 					}
 					tried[next.ID] = true
 					if res2, err2 := s.chatWithAccount(ctx, next.ID, chathub.Account{AccessToken: next.AccessToken, OID: next.OID, TID: next.TID}, chathub.Request{Text: routePrompt, Tone: tone, Attachments: body.Attachments, LicenseType: toolCfg.LicenseType, Scenario: toolCfg.Scenario}); err2 == nil {
-						s.dropTransientConversation(routeRes.ConversationID)
+						s.dropTransientConversation(next.ID, routeRes.ConversationID)
 						routeRes, routeErr = res2, nil
 						acc = next
 						account = chathub.Account{AccessToken: next.AccessToken, OID: next.OID, TID: next.TID}
@@ -2179,12 +2191,31 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		s.dropTransientConversation(routeRes.ConversationID)
+		s.dropTransientConversation(acc.ID, routeRes.ConversationID)
+		if planningMode == "router_slim" {
+			if needNames := parseNeedToolsDecision(routeRes.Text, toolMaps); len(needNames) > 0 {
+				neededTools := filterToolsByName(toolMaps, needNames)
+				if len(neededTools) > 0 {
+					fillPrompt := modelToolParamFillPrompt(prompt+"\n"+activeLedger.RouterContext(), neededTools)
+					fillRes, fillErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: fillPrompt, Tone: tone, Attachments: body.Attachments, LicenseType: toolCfg.LicenseType, Scenario: toolCfg.Scenario})
+					if fillErr == nil {
+						s.dropTransientConversation(acc.ID, fillRes.ConversationID)
+						routeRes = fillRes
+					}
+				}
+			}
+		}
 		calls, parsed := parseModelToolDecision(routeRes.Text, toolMaps, body.ToolChoice)
+		log.Printf("[req-trace] id=%s stage=router_initial_decision calls=%d parsed=%t text_preview=%q", requestID, len(calls), parsed, compactToolResult(routeRes.Text, 80))
 		if isSandboxHallucination(routeRes.Text) || isToolRefusal(routeRes.Text) {
 			log.Printf("[router-sandbox-eject] id=%s model hallucinated sandbox or refused tools: %q", requestID, compactToolResult(routeRes.Text, 120))
 			toolList := strings.Join(declaredToolNames(toolMaps), ", ")
-			defs, _ := json.Marshal(toolMaps)
+			var toolDefsBytes []byte
+			if planningMode == "router_slim" {
+				toolDefsBytes, _ = json.Marshal(compactToolSchemaList(toolMaps))
+			} else {
+				toolDefsBytes, _ = json.Marshal(toolMaps)
+			}
 			correctionText := fmt.Sprintf(`CRITICAL CORRECTION:
 You incorrectly claimed that files cannot be accessed or that /mnt/data is required, or hallucinated a cloud sandbox/container.
 1. You are running as an internal tool router for a local host. There is NO sandbox and NO /mnt/data. Never ask to upload ZIP archives or project files.
@@ -2201,33 +2232,62 @@ User request:
 OUTPUT FORMAT:
 CALL_TOOL: tool_name({"arg1":"value1"})
 
-Decision:`, toolList, string(defs), prompt+"\n"+activeLedger.RouterContext())
+Decision:`, toolList, string(toolDefsBytes), prompt+"\n"+activeLedger.RouterContext())
 
 			retryRes, retryErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: correctionText, Tone: tone, Attachments: body.Attachments, LicenseType: toolCfg.LicenseType, Scenario: toolCfg.Scenario})
 			if retryErr == nil {
-				s.dropTransientConversation(retryRes.ConversationID)
+				s.dropTransientConversation(acc.ID, retryRes.ConversationID)
 				routeRes = retryRes
 				calls, parsed = parseModelToolDecision(routeRes.Text, toolMaps, body.ToolChoice)
+			}
+			if len(calls) == 0 {
+				if synthCalls, ok := trySynthesizeWorkspaceInspection(prompt, routeRes.Text, toolMaps, body.ToolChoice); ok && len(synthCalls) > 0 {
+					log.Printf("[router-synth-fallback] id=%s synthesized %d tool calls after refusal retry: %s", requestID, len(synthCalls), synthCalls[0].Name)
+					calls = synthCalls
+					parsed = true
+				}
 			}
 		}
 		if !parsed {
 			if isSandboxHallucination(routeRes.Text) || isToolRefusal(routeRes.Text) {
-				writeOpenAIError(w, http.StatusBadGateway, "upstream_error", "model refused to call available tools and hallucinated sandbox")
-				return
-			}
-			repairRes, repairErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: `Repair this tool routing output into JSON only with shape {"calls":[{"name":"function_name","arguments":{}}]}. Do not invent calls; use {"calls":[]} if unrecoverable. OUTPUT:
+				if synthCalls, ok := trySynthesizeWorkspaceInspection(prompt, routeRes.Text, toolMaps, body.ToolChoice); ok && len(synthCalls) > 0 {
+					log.Printf("[router-synth-fallback] id=%s synthesized %d tool calls for unparsed refusal: %s", requestID, len(synthCalls), synthCalls[0].Name)
+					calls = synthCalls
+					parsed = true
+				} else {
+					writeOpenAIError(w, http.StatusBadGateway, "upstream_error", "model refused to call available tools and hallucinated sandbox")
+					return
+				}
+			} else {
+				repairRes, repairErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: `Repair this tool routing output into JSON only with shape {"calls":[{"name":"function_name","arguments":{}}]}. Do not invent calls; use {"calls":[]} if unrecoverable. OUTPUT:
 ` + compactToolResult(routeRes.Text, 6000), Tone: tone, Attachments: body.Attachments, LicenseType: toolCfg.LicenseType, Scenario: toolCfg.Scenario})
-			if repairErr == nil {
-				s.dropTransientConversation(repairRes.ConversationID)
-				calls, parsed = parseModelToolDecision(repairRes.Text, toolMaps, body.ToolChoice)
-			}
-			if !parsed {
-				writeOpenAIError(w, http.StatusBadGateway, "upstream_error", "model returned an invalid tool routing decision")
-				return
+				if repairErr == nil {
+					s.dropTransientConversation(acc.ID, repairRes.ConversationID)
+					calls, parsed = parseModelToolDecision(repairRes.Text, toolMaps, body.ToolChoice)
+				}
+				if !parsed {
+					writeOpenAIError(w, http.StatusBadGateway, "upstream_error", "model returned an invalid tool routing decision")
+					return
+				}
 			}
 		}
 		calls = filterCompletedCalls(calls, activeLedger)
 		calls, _ = validateCalls("router", calls)
+		if len(calls) == 0 && (isSandboxHallucination(routeRes.Text) || isToolRefusal(routeRes.Text)) {
+			if synthCalls, ok := trySynthesizeWorkspaceInspection(prompt, routeRes.Text, toolMaps, body.ToolChoice); ok && len(synthCalls) > 0 {
+				synthCalls = filterCompletedCalls(synthCalls, activeLedger)
+				synthCalls, _ = validateCalls("router", synthCalls)
+				if len(synthCalls) > 0 {
+					log.Printf("[router-synth-fallback] id=%s synthesized %d validated tool calls: %s", requestID, len(synthCalls), synthCalls[0].Name)
+					calls = synthCalls
+				}
+			}
+			if len(calls) == 0 {
+				writeOpenAIError(w, http.StatusBadGateway, "upstream_error", "model refused to execute tools for workspace task")
+				return
+			}
+		}
+		log.Printf("[req-trace] id=%s stage=router_final_decision calls=%d", requestID, len(calls))
 		if len(calls) > 0 {
 			scope := fmt.Sprintf("%d:%v", len(body.Messages), completedCallIDs(activeLedger))
 			for i := range calls {
@@ -2241,13 +2301,18 @@ Decision:`, toolList, string(defs), prompt+"\n"+activeLedger.RouterContext())
 			return
 		}
 		if fmt.Sprint(body.ToolChoice) == "required" {
-			defs, _ := json.Marshal(toolMaps)
+			var defs []byte
+			if planningMode == "router_slim" {
+				defs, _ = json.Marshal(compactToolSchemaList(toolMaps))
+			} else {
+				defs, _ = json.Marshal(toolMaps)
+			}
 			retryText := `Select at least one required next tool call from FUNCTION_DEFINITIONS. Validate every argument against its schema. Return JSON only as {"calls":[{"name":"function_name","arguments":{}}]}.
 APPLICATION_REQUEST_AND_EVIDENCE:
 ` + prompt + "\n" + activeLedger.RouterContext() + "\nFUNCTION_DEFINITIONS:\n" + string(defs)
 			retryRes, retryErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: retryText, Tone: tone, Attachments: body.Attachments, LicenseType: toolCfg.LicenseType, Scenario: toolCfg.Scenario})
 			if retryErr == nil {
-				s.dropTransientConversation(retryRes.ConversationID)
+				s.dropTransientConversation(acc.ID, retryRes.ConversationID)
 				calls, parsed = parseModelToolDecision(retryRes.Text, toolMaps, body.ToolChoice)
 				calls = filterCompletedCalls(calls, activeLedger)
 				calls, _ = validateCalls("router", calls)

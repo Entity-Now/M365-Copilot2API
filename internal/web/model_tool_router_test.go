@@ -104,3 +104,180 @@ func TestModelToolRouterPromptAntiSandbox(t *testing.T) {
 	}
 }
 
+func TestModelToolSlimRouterPrompt(t *testing.T) {
+	tools := testTools()
+	p := modelToolSlimRouterPrompt("check files", tools, "auto")
+	if !strings.Contains(p, "Available tools (summary):") {
+		t.Fatalf("expected summary list header: %s", p)
+	}
+	if !strings.Contains(p, "- get_weather:") || !strings.Contains(p, "- get_time:") {
+		t.Fatalf("expected tool names in summary: %s", p)
+	}
+	if !strings.Contains(p, "NEED_TOOLS:") || !strings.Contains(p, "BATCH MULTI-TOOL CALLING:") {
+		t.Fatalf("expected NEED_TOOLS and batch directive in slim router prompt: %s", p)
+	}
+}
+
+func TestParseNeedToolsDecision(t *testing.T) {
+	tools := testTools()
+	tests := []struct {
+		input    string
+		expected []string
+	}{
+		{"NEED_TOOLS: [get_weather, get_time]", []string{"get_weather", "get_time"}},
+		{"NEED_TOOLS: get_weather, unknown_tool", []string{"get_weather"}},
+		{"need_tools: [\"get_weather\", \"get_time\"]", []string{"get_weather", "get_time"}},
+		{"CALL_TOOL: get_weather({\"city\":\"Beijing\"})", nil},
+		{"NO_TOOL_NEEDED", nil},
+	}
+	for _, tc := range tests {
+		got := parseNeedToolsDecision(tc.input, tools)
+		if len(got) != len(tc.expected) {
+			t.Fatalf("input %q: got %v, want %v", tc.input, got, tc.expected)
+		}
+		for i := range got {
+			if got[i] != tc.expected[i] {
+				t.Fatalf("input %q at %d: got %s, want %s", tc.input, i, got[i], tc.expected[i])
+			}
+		}
+	}
+}
+
+func TestFilterToolsByName(t *testing.T) {
+	tools := testTools()
+	filtered := filterToolsByName(tools, []string{"get_weather"})
+	if len(filtered) != 1 {
+		t.Fatalf("expected 1 filtered tool, got %d", len(filtered))
+	}
+	fn, _ := filtered[0]["function"].(map[string]any)
+	if fn["name"] != "get_weather" {
+		t.Fatalf("unexpected filtered tool: %v", fn)
+	}
+}
+
+func TestCompactToolSchemaList(t *testing.T) {
+	tools := testTools()
+	compact := compactToolSchemaList(tools)
+	if len(compact) != len(tools) {
+		t.Fatalf("expected %d compact tools, got %d", len(tools), len(compact))
+	}
+	fn, _ := compact[0]["function"].(map[string]any)
+	if fn["name"] == "" {
+		t.Fatal("expected function name to be preserved")
+	}
+}
+
+func TestModelToolRouterPromptPreservesFullTools(t *testing.T) {
+	customTools := []map[string]any{
+		{
+			"type": "function",
+			"function": map[string]any{
+				"name":        "search_code",
+				"description": "Searches codebase",
+				"parameters": map[string]any{
+					"$schema":              "http://json-schema.org/draft-07/schema#",
+					"title":                "SearchCodeParams",
+					"type":                 "object",
+					"additionalProperties": false,
+					"required":             []any{"query"},
+					"properties": map[string]any{
+						"query": map[string]any{
+							"type":        "string",
+							"description": "search query string",
+						},
+					},
+				},
+			},
+		},
+	}
+	p := modelToolRouterPrompt("search for main function", customTools, "auto")
+	// The default router prompt must preserve original $schema, title, and all properties without compaction
+	if !strings.Contains(p, "SearchCodeParams") {
+		t.Fatalf("expected full uncompacted schema (SearchCodeParams) in default router prompt: %s", p)
+	}
+	if !strings.Contains(p, "draft-07/schema") {
+		t.Fatalf("expected full $schema in default router prompt: %s", p)
+	}
+}
+
+func TestIsToolRefusalRealWorld(t *testing.T) {
+	refusalText := `我可以帮你完成，但当前对话里有一个关键限制：
+
+你要求的是**“按照规划内容完成文档编写”**，而真正编写这些文档必须先扫描并阅读整个 C:\Langauge\CSharp\WDM 项目的结构、README、解决方案、模块、现有 docs 等内容，否则会违反你自己在 CLAUDE.md 里要求的：
+
+获取充分上下文，必须直接查阅全部关键文件后再输出；禁止凭空猜测。
+
+而我当前无法直接读取你本地 C:\Langauge\CSharp\WDM 的完整项目内容，因此现在如果直接生成几十份文档，大部分都会变成假设性的内容。
+
+我建议按下面顺序进行：`
+
+	if !isToolRefusal(refusalText) {
+		t.Fatalf("expected real-world refusal text to be identified as tool refusal")
+	}
+
+	calls, parsed := parseModelToolDecision(refusalText, testTools(), "auto")
+	if parsed || len(calls) > 0 {
+		t.Fatalf("expected refusal to return parsed=false, got parsed=%v, calls=%v", parsed, calls)
+	}
+}
+
+func TestExtractTargetWorkspacePath(t *testing.T) {
+	text := `而我当前无法直接读取你本地 C:\Langauge\CSharp\WDM 的完整项目内容`
+	path := extractTargetWorkspacePath(text, "")
+	if path != `C:\Langauge\CSharp\WDM` {
+		t.Fatalf("expected C:\\Langauge\\CSharp\\WDM, got %s", path)
+	}
+
+	linuxText := "Please inspect /home/user/myproject/src before continuing"
+	linuxPath := extractTargetWorkspacePath("", linuxText)
+	if linuxPath != "/home/user/myproject/src" {
+		t.Fatalf("expected /home/user/myproject/src, got %s", linuxPath)
+	}
+}
+
+func TestTrySynthesizeWorkspaceInspection(t *testing.T) {
+	clientTools := []map[string]any{
+		{
+			"type": "function",
+			"function": map[string]any{
+				"name": "list_dir",
+				"parameters": map[string]any{
+					"type":     "object",
+					"required": []any{"path"},
+					"properties": map[string]any{
+						"path": map[string]any{"type": "string"},
+					},
+				},
+			},
+		},
+		{
+			"type": "function",
+			"function": map[string]any{
+				"name": "view_file",
+				"parameters": map[string]any{
+					"type":     "object",
+					"required": []any{"AbsolutePath"},
+					"properties": map[string]any{
+						"AbsolutePath": map[string]any{"type": "string"},
+					},
+				},
+			},
+		},
+	}
+
+	refusal := `当前无法直接读取你本地 C:\Langauge\CSharp\WDM 的完整项目内容`
+	prompt := `请帮我编写 C:\Langauge\CSharp\WDM 的文档`
+
+	calls, ok := trySynthesizeWorkspaceInspection(prompt, refusal, clientTools, "auto")
+	if !ok || len(calls) != 1 {
+		t.Fatalf("expected synthesized call, got ok=%v, calls=%v", ok, calls)
+	}
+	if calls[0].Name != "list_dir" {
+		t.Fatalf("expected list_dir tool, got %s", calls[0].Name)
+	}
+	if !strings.Contains(string(calls[0].Arguments), `C:\\Langauge\\CSharp\\WDM`) {
+		t.Fatalf("expected arguments to contain path, got %s", string(calls[0].Arguments))
+	}
+}
+
+

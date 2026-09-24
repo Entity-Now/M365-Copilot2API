@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -149,12 +150,29 @@ func normalizeFailure(s string) string {
 	return s
 }
 func (l agentLedger) RouterContext() string {
-	type compact struct {
-		Completed    []toolEvidence `json:"completed"`
-		Pending      []toolEvidence `json:"pending"`
-		RepeatedCall bool           `json:"repeated_call"`
+	type compactEvidence struct {
+		ID        string `json:"id"`
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"`
+		Result    string `json:"result,omitempty"`
+		Failed    bool   `json:"failed"`
 	}
-	b, _ := json.Marshal(compact{l.Completed, l.Pending, l.RepeatedCall})
+	type compact struct {
+		Completed    []compactEvidence `json:"completed"`
+		Pending      []toolEvidence    `json:"pending"`
+		RepeatedCall bool              `json:"repeated_call"`
+	}
+	completed := make([]compactEvidence, 0, len(l.Completed))
+	for _, e := range l.Completed {
+		completed = append(completed, compactEvidence{
+			ID:        e.ID,
+			Name:      e.Name,
+			Arguments: e.Arguments,
+			Result:    compactToolResult(e.Result, 250),
+			Failed:    e.Failed,
+		})
+	}
+	b, _ := json.Marshal(compact{completed, l.Pending, l.RepeatedCall})
 	hint := "Use only this compact evidence. A completed call is final evidence; do not issue the same name and arguments again."
 	if l.RepeatedFailure {
 		hint += " The same call failed repeatedly; change strategy instead of retrying unchanged."
@@ -171,11 +189,35 @@ func canonicalToolArguments(s string) string {
 	return s
 }
 
+func extractFileTargetPath(args string) string {
+	var m map[string]any
+	if json.Unmarshal([]byte(args), &m) == nil {
+		for _, key := range []string{"AbsolutePath", "path", "file_path", "filePath", "target_file", "TargetFile", "file"} {
+			if v, ok := m[key].(string); ok && strings.TrimSpace(v) != "" {
+				p := filepath.Clean(strings.TrimSpace(v))
+				return strings.ToLower(filepath.ToSlash(p))
+			}
+		}
+	}
+	return ""
+}
+
 func (l agentLedger) hasCompleted(name, args string) bool {
 	want := canonicalToolArguments(args)
+	lowName := strings.ToLower(name)
+	isRead := strings.Contains(lowName, "read") || strings.Contains(lowName, "view") || strings.Contains(lowName, "cat") || strings.Contains(lowName, "inspect")
+	targetPath := ""
+	if isRead {
+		targetPath = extractFileTargetPath(args)
+	}
 	for _, e := range l.Completed {
-		if !e.Failed && e.Name == name && canonicalToolArguments(e.Arguments) == want {
-			return true
+		if !e.Failed && e.Name == name {
+			if canonicalToolArguments(e.Arguments) == want {
+				return true
+			}
+			if targetPath != "" && extractFileTargetPath(e.Arguments) == targetPath {
+				return true
+			}
 		}
 	}
 	return false
