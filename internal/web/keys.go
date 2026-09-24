@@ -25,7 +25,7 @@ type apiKeyRecord struct {
 }
 type apiKeyStore struct {
 	mu      sync.Mutex
-	Path    string
+	Path    string         `json:"-"`
 	Keys    []apiKeyRecord `json:"keys"`
 	persist *persistStore
 }
@@ -45,6 +45,7 @@ func openAPIKeys() *apiKeyStore {
 	s := newAPIKeyStore(p)
 	b, e := os.ReadFile(p)
 	if e == nil && json.Unmarshal(b, s) == nil {
+		s.Path = p
 		migrated := false
 		for i := range s.Keys {
 			if s.Keys[i].Raw != "" {

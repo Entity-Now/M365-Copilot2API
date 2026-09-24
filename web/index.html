@@ -2309,6 +2309,8 @@ async function loadSettings(){
     $('setTimeout').value=v.chatTimeoutSeconds||120;
     $('setToolPlanningMode').value=v.toolPlanningMode||'router';
     $('setImageApi').checked=v.enableImageApi===true;
+    if($('setCompactToolRouter')) $('setCompactToolRouter').checked=v.enableCompactToolRouter===true;
+    if($('setOnDemandToolSchema')) $('setOnDemandToolSchema').checked=v.enableOnDemandToolSchema===true;
   }catch(e){showNotice(e.message,'error');}
 }
 async function saveSettings(){
@@ -2320,6 +2322,8 @@ async function saveSettings(){
     if(timeout)body.chatTimeoutSeconds=parseInt(timeout);
     body.toolPlanningMode=$('setToolPlanningMode').value;
     body.enableImageApi=$('setImageApi').checked;
+    if($('setCompactToolRouter')) body.enableCompactToolRouter=$('setCompactToolRouter').checked;
+    if($('setOnDemandToolSchema')) body.enableOnDemandToolSchema=$('setOnDemandToolSchema').checked;
     await api('/api/admin/settings',{method:'PUT',body:JSON.stringify(body)});
     showNotice('设置已保存','success');
   }catch(e){showNotice(e.message,'error');}
