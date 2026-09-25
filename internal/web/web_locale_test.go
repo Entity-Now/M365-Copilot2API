@@ -171,3 +171,23 @@ func TestWebIndexesContainNoReplacementCharactersAndMatch(t *testing.T) {
 		t.Fatal("web index files are not byte-identical")
 	}
 }
+
+func TestWebIndexPageQueryRouting(t *testing.T) {
+	body, err := os.ReadFile("../../web/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	page := string(body)
+	for _, needle := range []string{
+		"function getInitialPage()",
+		"new URLSearchParams(window.location.search).get('page')",
+		"window.addEventListener('popstate'",
+		"const initPage=getInitialPage();",
+		"showPage(initPage,false);",
+	} {
+		if !strings.Contains(page, needle) {
+			t.Fatalf("web index missing page routing code %q", needle)
+		}
+	}
+}
+

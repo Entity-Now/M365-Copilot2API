@@ -245,3 +245,44 @@ Available skills:
 	}
 }
 
+func TestRouterDirectivesInfoIncludesToolsInPromptTemplate(t *testing.T) {
+	tools := []map[string]any{
+		{
+			"type": "function",
+			"function": map[string]any{
+				"name":        "fetch_file",
+				"description": "Fetches a file content by path.",
+				"parameters": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"path": map[string]any{"type": "string", "description": "The path to file"},
+					},
+				},
+			},
+		},
+	}
+
+	slimInfo := getRouterDirectivesInfo("router_slim", true, tools)
+	slimTemplate, ok := slimInfo["promptTemplate"].(string)
+	if !ok || !strings.Contains(slimTemplate, "- fetch_file: Fetches a file content by path.") {
+		t.Fatalf("expected slim template to contain compact summary, got %v", slimTemplate)
+	}
+	// Verify parameters schema is NOT in the slim template
+	if strings.Contains(slimTemplate, `"properties"`) || strings.Contains(slimTemplate, `"The path to file"`) {
+		t.Fatalf("slim template must not leak parameter schemas: %s", slimTemplate)
+	}
+
+	// Verify conversation.html contains the router slim notice
+	body, err := os.ReadFile("../../web/conversation.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	page := string(body)
+	if !strings.Contains(page, "ROUTER_SLIM · 本地保留 / 上游精简") {
+		t.Fatalf("conversation.html missing router slim badge")
+	}
+	if !strings.Contains(page, "工具精简模式 (Router Slim) 生效说明") {
+		t.Fatalf("conversation.html missing router slim notice banner")
+	}
+}
+

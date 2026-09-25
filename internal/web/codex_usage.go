@@ -103,8 +103,23 @@ func estimateResponsesUsage(model string, input []oaiMsg, tools []chathub.Tool, 
 			in += serializedTokenCount(call, count)
 		}
 	}
+	cfg := currentSettings()
+	planningMode := cfg.ToolPlanningMode
 	for _, tool := range tools {
-		in += toolProtocolTokens + serializedTokenCount(tool, count)
+		if planningMode == "router_slim" || cfg.EnableCompactToolRouter || cfg.EnableOnDemandToolSchema {
+			var fn map[string]any
+			if len(tool.Function) > 0 {
+				_ = json.Unmarshal(tool.Function, &fn)
+			}
+			name, _ := fn["name"].(string)
+			desc, _ := fn["description"].(string)
+			if len(desc) > 120 {
+				desc = desc[:120]
+			}
+			in += toolProtocolTokens + count(name) + count(desc)
+		} else {
+			in += toolProtocolTokens + serializedTokenCount(tool, count)
+		}
 	}
 	if toolChoice != nil {
 		in += toolChoiceProtocolTokens + serializedTokenCount(toolChoice, count)

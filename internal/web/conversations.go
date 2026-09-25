@@ -253,7 +253,7 @@ func (s *Server) handleM365ConversationDetail(w http.ResponseWriter, r *http.Req
 			"messages":       session.ContextHistory,
 			"tools":          parsedTools,
 			"skills":         extractSkillsFromMessages(session.ContextHistory),
-			"router":         getRouterDirectivesInfo(s.toolPlanningMode(), len(session.Tools) > 0),
+			"router":         getRouterDirectivesInfo(s.toolPlanningMode(), len(session.Tools) > 0, parsedTools),
 		})
 		return
 	}
@@ -283,7 +283,7 @@ func (s *Server) handleM365ConversationDetail(w http.ResponseWriter, r *http.Req
 					"messages":       []any{},
 					"tools":          []any{},
 					"skills":         []any{},
-					"router":         getRouterDirectivesInfo(s.toolPlanningMode(), false),
+					"router":         getRouterDirectivesInfo(s.toolPlanningMode(), false, nil),
 				})
 				return
 			}
@@ -317,7 +317,7 @@ func (s *Server) handleM365ConversationDetail(w http.ResponseWriter, r *http.Req
 				"messages":       []any{},
 				"tools":          []any{},
 				"skills":         []any{},
-				"router":         getRouterDirectivesInfo(s.toolPlanningMode(), false),
+				"router":         getRouterDirectivesInfo(s.toolPlanningMode(), false, nil),
 			})
 			return
 		}
@@ -337,7 +337,7 @@ func (s *Server) handleM365ConversationDetail(w http.ResponseWriter, r *http.Req
 		"messages":       []any{},
 		"tools":          []any{},
 		"skills":         []any{},
-		"router":         getRouterDirectivesInfo(s.toolPlanningMode(), false),
+		"router":         getRouterDirectivesInfo(s.toolPlanningMode(), false, nil),
 	})
 }
 
@@ -444,14 +444,12 @@ func (s *Server) handleM365Delete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if accountID != "" {
-		client, ok := s.cloudClients.get(accountID)
-		if !ok {
-			writeOpenAIError(w, http.StatusServiceUnavailable, "m365_not_configured", "m365_cloud_not_configured")
-			return
-		}
-		if err := client.DeleteConversation(body.ConversationID); err != nil {
-			writeOpenAIError(w, http.StatusBadGateway, "m365_error", err.Error())
-			return
+		if s.cloudClients != nil {
+			if client, ok := s.cloudClients.get(accountID); ok {
+				if err := client.DeleteConversation(body.ConversationID); err != nil {
+					log.Printf("[delete-conv] cloud delete failed for %s (will still purge locally): %v", body.ConversationID, err)
+				}
+			}
 		}
 		s.dropConversation(body.ConversationID)
 		jsonOut(w, map[string]any{"status": "deleted", "conversation_id": body.ConversationID})
@@ -467,8 +465,7 @@ func (s *Server) handleM365Delete(w http.ResponseWriter, r *http.Request) {
 		}
 		if singleClient != nil {
 			if err := singleClient.DeleteConversation(body.ConversationID); err != nil {
-				writeOpenAIError(w, http.StatusBadGateway, "m365_error", err.Error())
-				return
+				log.Printf("[delete-conv] single client delete failed for %s (will still purge locally): %v", body.ConversationID, err)
 			}
 			s.dropConversation(body.ConversationID)
 			jsonOut(w, map[string]any{"status": "deleted", "conversation_id": body.ConversationID})
@@ -478,23 +475,31 @@ func (s *Server) handleM365Delete(w http.ResponseWriter, r *http.Request) {
 
 	// 若有多个账号且未指定，遍历所有账号尝试删除
 	if s.cloudClients != nil && s.cloudClients.len() > 1 {
-		var lastErr error
-		deleted := false
 		for _, client := range s.cloudClients.list() {
 			if err := client.DeleteConversation(body.ConversationID); err == nil {
-				deleted = true
 				break
-			} else {
-				lastErr = err
 			}
 		}
-		if deleted {
+		s.dropConversation(body.ConversationID)
+		jsonOut(w, map[string]any{"status": "deleted", "conversation_id": body.ConversationID})
+		return
+	}
+
+	// 若本地存在该会话记录，直接清理本地
+	if s.sessionResolver != nil {
+		if _, ok := s.sessionResolver.GetConversationByID(body.ConversationID); ok {
 			s.dropConversation(body.ConversationID)
 			jsonOut(w, map[string]any{"status": "deleted", "conversation_id": body.ConversationID})
 			return
 		}
-		if lastErr != nil {
-			writeOpenAIError(w, http.StatusBadGateway, "m365_error", lastErr.Error())
+	}
+	if s.conversationManager != nil {
+		s.conversationManager.mu.Lock()
+		_, ok := s.conversationManager.data[body.ConversationID]
+		s.conversationManager.mu.Unlock()
+		if ok {
+			s.dropConversation(body.ConversationID)
+			jsonOut(w, map[string]any{"status": "deleted", "conversation_id": body.ConversationID})
 			return
 		}
 	}
@@ -510,29 +515,32 @@ func (s *Server) handleM365CleanupAll(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		AccountID     string `json:"account_id"`
 		KeepN         int    `json:"keep_n"`
-		IncludeActive bool   `json:"include_active"`
+		IncludeActive *bool  `json:"include_active"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
 
-	if s.cloudClients == nil || s.cloudClients.len() == 0 {
-		writeOpenAIError(w, http.StatusServiceUnavailable, "m365_not_configured", "m365_cloud_not_configured")
-		return
+	// 一键清理模式下，默认清理包含活跃会话（IncludeActive=true），除非显式指定为 false
+	includeActive := true
+	if body.IncludeActive != nil {
+		includeActive = *body.IncludeActive
 	}
 
 	targets := map[string]*M365CloudClient{}
-	if accID := strings.TrimSpace(body.AccountID); accID != "" {
-		if c, ok := s.cloudClients.get(accID); ok {
-			targets[accID] = c
+	if s.cloudClients != nil {
+		if accID := strings.TrimSpace(body.AccountID); accID != "" {
+			if c, ok := s.cloudClients.get(accID); ok {
+				targets[accID] = c
+			} else {
+				writeOpenAIError(w, http.StatusBadRequest, "account_not_found", "specified account_id was not found")
+				return
+			}
 		} else {
-			writeOpenAIError(w, http.StatusBadRequest, "account_not_found", "specified account_id was not found")
-			return
+			targets = s.cloudClients.list()
 		}
-	} else {
-		targets = s.cloudClients.list()
 	}
 
 	active := map[string]bool{}
-	if !body.IncludeActive {
+	if !includeActive {
 		active = s.activeConversationSet(2 * time.Hour)
 	}
 
@@ -541,12 +549,13 @@ func (s *Server) handleM365CleanupAll(w http.ResponseWriter, r *http.Request) {
 		keepN = 0
 	}
 
-	totalDeleted := 0
+	deletedConvIDs := make(map[string]bool)
 	type cand struct {
 		id       string
 		createMs int64
 	}
 
+	// 1. 云端对话清理
 	for _, client := range targets {
 		for round := 0; round < 100; round++ {
 			chats, err := client.ListConversations()
@@ -564,7 +573,7 @@ func (s *Server) handleM365CleanupAll(w http.ResponseWriter, r *http.Request) {
 				if convID == "" {
 					continue
 				}
-				if !body.IncludeActive && active[convID] {
+				if !includeActive && active[convID] {
 					continue
 				}
 				createMs, ok := parseChatTimestampMs(chat)
@@ -586,11 +595,10 @@ func (s *Server) handleM365CleanupAll(w http.ResponseWriter, r *http.Request) {
 			for i := keepN; i < len(candidates); i++ {
 				cid := candidates[i].id
 				if err := client.DeleteConversation(cid); err != nil {
-					log.Printf("[cleanup-all] failed to delete %s: %v", cid, err)
-					continue
+					log.Printf("[cleanup-all] failed to delete cloud conv %s: %v", cid, err)
 				}
 				s.dropConversation(cid)
-				totalDeleted++
+				deletedConvIDs[cid] = true
 				anyDeleted = true
 			}
 
@@ -600,9 +608,84 @@ func (s *Server) handleM365CleanupAll(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// 2. 本地 SessionResolver 对话清理
+	if s.sessionResolver != nil {
+		for _, sess := range s.sessionResolver.ListSessions() {
+			cid := sess.ConversationID
+			if cid == "" || deletedConvIDs[cid] {
+				continue
+			}
+			if body.AccountID != "" && sess.AccountID != body.AccountID {
+				continue
+			}
+			if !includeActive && active[cid] {
+				continue
+			}
+			if cl, ok := targets[sess.AccountID]; ok {
+				_ = cl.DeleteConversation(cid)
+			} else if len(targets) == 1 {
+				for _, cl := range targets {
+					_ = cl.DeleteConversation(cid)
+				}
+			}
+			s.dropConversation(cid)
+			deletedConvIDs[cid] = true
+		}
+	}
+
+	// 3. 本地 ConversationManager 对话清理
+	if s.conversationManager != nil {
+		for _, c := range s.conversationManager.List() {
+			cid := c.ID
+			if cid == "" || deletedConvIDs[cid] {
+				continue
+			}
+			if body.AccountID != "" && c.AccountID != body.AccountID {
+				continue
+			}
+			if !includeActive && active[cid] {
+				continue
+			}
+			if cl, ok := targets[c.AccountID]; ok {
+				_ = cl.DeleteConversation(cid)
+			} else if len(targets) == 1 {
+				for _, cl := range targets {
+					_ = cl.DeleteConversation(cid)
+				}
+			}
+			s.dropConversation(cid)
+			deletedConvIDs[cid] = true
+		}
+	}
+
+	// 4. 本地 SessionStore 对话清理
+	if s.sessions != nil {
+		for _, c := range s.sessions.list() {
+			cid := c.ConversationID
+			if cid == "" {
+				cid = c.ID
+			}
+			if cid == "" || deletedConvIDs[cid] {
+				continue
+			}
+			if body.AccountID != "" && c.AccountID != body.AccountID {
+				continue
+			}
+			if !includeActive && active[cid] {
+				continue
+			}
+			if cl, ok := targets[c.AccountID]; ok {
+				_ = cl.DeleteConversation(cid)
+			}
+			s.dropConversation(cid)
+			s.sessions.delete(c.ID)
+			deletedConvIDs[cid] = true
+		}
+	}
+
 	jsonOut(w, map[string]any{
 		"status":  "cleaned",
-		"deleted": totalDeleted,
+		"deleted": len(deletedConvIDs),
 	})
 }
 
@@ -753,7 +836,7 @@ func extractSkillsFromMessages(messages []oaiMsg) []map[string]string {
 	return skills
 }
 
-func getRouterDirectivesInfo(planningMode string, hasTools bool) map[string]any {
+func getRouterDirectivesInfo(planningMode string, hasTools bool, tools []map[string]any) map[string]any {
 	rules := []string{
 		"本地宿主权限：所有工具均直接在调用者的本地操作系统运行，具备本地工作区、相对路径与绝对路径的直接读写执行权限。",
 		"严禁沙箱幻觉：网关是内部调度器，严禁声称处于云端沙箱或无本地权限，严禁索取 ZIP 压缩包上传。",
@@ -763,9 +846,9 @@ func getRouterDirectivesInfo(planningMode string, hasTools bool) map[string]any 
 	}
 	var promptTemplate string
 	if planningMode == "router_slim" {
-		promptTemplate = modelToolSlimRouterPrompt("[USER_REQUEST_AND_CONTEXT]", nil, "auto")
+		promptTemplate = modelToolSlimRouterPrompt("[USER_REQUEST_AND_CONTEXT]", tools, "auto")
 	} else {
-		promptTemplate = modelToolRouterPrompt("[USER_REQUEST_AND_CONTEXT]", nil, "auto")
+		promptTemplate = modelToolRouterPrompt("[USER_REQUEST_AND_CONTEXT]", tools, "auto")
 	}
 	return map[string]any{
 		"planningMode":   planningMode,

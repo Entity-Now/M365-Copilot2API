@@ -211,3 +211,18 @@ func (s *userSessionStore) ActiveConversations(window time.Duration) map[string]
 	}
 	return out
 }
+
+func (s *userSessionStore) DeleteByConversation(conversationID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	changed := false
+	for k, v := range s.data {
+		if v.ConversationID == conversationID {
+			delete(s.data, k)
+			changed = true
+		}
+	}
+	if changed {
+		s.persist.markDirty()
+	}
+}

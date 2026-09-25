@@ -1,0 +1,1 @@
+go build -trimpath -ldflags="-s -w" -o m365-copilot2api.exe ./cmd/server

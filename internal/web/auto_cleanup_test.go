@@ -1,10 +1,12 @@
 package web
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -240,5 +242,46 @@ func TestParseChatTimestampMs(t *testing.T) {
 				t.Fatalf("expected timestamp=%d, got %d", tc.expected, got)
 			}
 		})
+	}
+}
+
+func TestHandleM365CleanupAllPurgesLocalGatewaySessions(t *testing.T) {
+	s := newTestServerForAutoCleanup(t)
+
+	// Populate sessions in sessionResolver, conversationManager, and sessionStore
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	req.Header.Set("Authorization", "Bearer key-test")
+	s.sessionResolver.Bind("sess-1", "conv-1", "acc1", &oaiReq{Messages: []oaiMsg{{Role: "user", Content: "hello"}}}, "", req)
+	s.conversationManager.Record("conv-2", "acc1", "managed convo")
+	s.sessions.upsert(conversation{ID: "conv-3", ConversationID: "conv-3", AccountID: "acc1", Title: "store convo"})
+
+	// Call handleM365CleanupAll
+	w := httptest.NewRecorder()
+	cleanupReq := httptest.NewRequest(http.MethodPost, "/api/m365/conversations/cleanup-all", strings.NewReader(`{"keep_n":0}`))
+	s.handleM365CleanupAll(w, cleanupReq)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var res map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &res); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+
+	deleted, ok := res["deleted"].(float64)
+	if !ok || int(deleted) != 3 {
+		t.Fatalf("expected 3 deleted, got %v in response: %v", res["deleted"], res)
+	}
+
+	// Verify all local stores are emptied
+	if len(s.sessionResolver.ListSessions()) != 0 {
+		t.Errorf("expected 0 sessions in sessionResolver, got %d", len(s.sessionResolver.ListSessions()))
+	}
+	if len(s.conversationManager.List()) != 0 {
+		t.Errorf("expected 0 conversations in conversationManager, got %d", len(s.conversationManager.List()))
+	}
+	if len(s.sessions.list()) != 0 {
+		t.Errorf("expected 0 conversations in sessionStore, got %d", len(s.sessions.list()))
 	}
 }

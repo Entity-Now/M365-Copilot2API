@@ -1,6 +1,9 @@
 package web
 
-import "strings"
+import (
+	"regexp"
+	"strings"
+)
 
 const (
 	ToolPlanningModeRouter     = "router"
@@ -20,10 +23,23 @@ func isValidToolPlanningMode(mode string) bool {
 	return mode == "" || mode == ToolPlanningModeRouter || mode == ToolPlanningModeRouterSlim
 }
 
+var reGreetingTags = regexp.MustCompile(`(?s)<[^>]+>.*?</[^>]+>|<[^>]+>`)
+
 // isTrivialGreeting returns true if the prompt is purely a casual greeting
 // that never needs tool invocation or workspace file inspection.
 func isTrivialGreeting(prompt string) bool {
-	p := strings.TrimSpace(strings.ToLower(prompt))
+	text := prompt
+	if strings.Contains(text, "<turn role=\"user\">") {
+		idx := strings.LastIndex(text, "<turn role=\"user\">")
+		if idx != -1 {
+			text = text[idx+len("<turn role=\"user\">"):]
+			if end := strings.Index(text, "</turn>"); end != -1 {
+				text = text[:end]
+			}
+		}
+	}
+	text = reGreetingTags.ReplaceAllString(text, " ")
+	p := strings.TrimSpace(strings.ToLower(text))
 	p = strings.Trim(p, "!?.。？！~ \t\r\n`'\"")
 	switch p {
 	case "hi", "hello", "hey", "hi there", "hello there", "你好", "您好", "早上好", "下午好", "晚上好", "test", "ping":

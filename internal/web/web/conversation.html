@@ -896,8 +896,32 @@ function formatStandalonePreBlocks(container){
   });
 }
 
-function renderTools(tools){
+function renderTools(tools, router){
   if(!Array.isArray(tools)||!tools.length)return '';
+  const isSlim = router && router.planningMode === 'router_slim';
+  const isStandard = router && router.planningMode === 'router';
+  const isOff = router && router.planningMode === 'off';
+
+  let modeBadge = '';
+  let noticeHtml = '';
+
+  if(isSlim){
+    modeBadge = `<span style="font-size:11px;padding:2px 7px;border-radius:4px;background:color-mix(in srgb,var(--purple) 15%,transparent);color:var(--purple);font-family:var(--font-mono);font-weight:600">ROUTER_SLIM · 本地保留 / 上游精简</span>`;
+    noticeHtml = `
+      <div style="margin-bottom:12px;padding:10px 14px;border-radius:8px;background:color-mix(in srgb,var(--purple) 8%,transparent);border:1px solid color-mix(in srgb,var(--purple) 25%,transparent);font-size:12px;line-height:1.6;color:var(--text)">
+        <div style="font-weight:600;color:var(--purple);display:flex;align-items:center;gap:6px;margin-bottom:4px">
+          <i data-lucide="zap" style="width:14px;height:14px"></i>
+          <span>工具精简模式 (Router Slim) 生效说明</span>
+        </div>
+        <div>下方展示的是客户端（如 Claude Code CLI / MCP 插件）向网关注册的<strong>全量工具元数据</strong>（保存在网关本地，用于参数完整性校验与按需派发）。<strong>在发送给 M365 Copilot 时，完整参数 Schema 绝未注入 Prompt</strong>，仅提取单行极简摘要（名称与描述），且问候语等轻量请求直接跳过，以最大化压缩上下文并避免触发模型沙箱拒绝。</div>
+      </div>
+    `;
+  } else if(isStandard){
+    modeBadge = `<span style="font-size:11px;padding:2px 7px;border-radius:4px;background:color-mix(in srgb,var(--green) 15%,transparent);color:var(--green);font-family:var(--font-mono);font-weight:600">ROUTER · 标准两阶段路由</span>`;
+  } else if(isOff){
+    modeBadge = `<span style="font-size:11px;padding:2px 7px;border-radius:4px;background:color-mix(in srgb,var(--muted) 15%,transparent);color:var(--muted);font-family:var(--font-mono);font-weight:600">OFF · 声明直通上游</span>`;
+  }
+
   const items=tools.map(tool=>{
     const fn=tool.function||{};
     const name=fn.name||tool.name||'tool';
@@ -923,10 +947,17 @@ function renderTools(tools){
   }).join('');
   return `<details class="registered-tools-card" open>
     <summary class="registered-tools-summary">
-      <span style="display:flex;align-items:center;gap:7px"><i data-lucide="boxes" style="width:15px;height:15px"></i><span>${translateText('Registered tools')} (${tools.length})</span></span>
+      <span style="display:flex;align-items:center;gap:7px;flex-wrap:wrap">
+        <i data-lucide="boxes" style="width:15px;height:15px"></i>
+        <span>${translateText('Registered tools')} (${tools.length})</span>
+        ${modeBadge}
+      </span>
       <span style="font-size:11px;color:var(--muted)">${translateText('Click to expand/collapse')}</span>
     </summary>
-    <div class="registered-tools-body">${items}</div>
+    <div class="registered-tools-body">
+      ${noticeHtml}
+      ${items}
+    </div>
   </details>`;
 }
 
@@ -1133,7 +1164,7 @@ function render(data){
       html+=renderRouter(data.router);
     }
     if(Array.isArray(data.tools)&&data.tools.length>0){
-      html+=renderTools(data.tools);
+      html+=renderTools(data.tools, data.router);
     }
     if(skills.length>0){
       html+=renderSkills(skills);

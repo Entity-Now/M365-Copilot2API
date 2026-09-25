@@ -29,3 +29,25 @@ func TestToolPlanningModeSupportsRouterSlim(t *testing.T) {
 		t.Fatal("expected invalid mode to fail")
 	}
 }
+
+func TestIsTrivialGreeting(t *testing.T) {
+	cases := []struct {
+		prompt string
+		want   bool
+	}{
+		{"hi", true},
+		{"Hello!", true},
+		{"你好", true},
+		{"ping", true},
+		{"<turn role=\"system\">Some system prompt</turn>\n<turn role=\"user\">hi</turn>", true},
+		{"<turn role=\"user\"><local-command-caveat>...</local-command-caveat><command-name>/clear</command-name>hi</turn>", true},
+		{"hi, please search the repo for all auth functions", false},
+		{"Check files in C:\\Users\\kang", false},
+		{"what is the capital of France?", false},
+	}
+	for _, tc := range cases {
+		if got := isTrivialGreeting(tc.prompt); got != tc.want {
+			t.Errorf("isTrivialGreeting(%q) = %v, want %v", tc.prompt, got, tc.want)
+		}
+	}
+}

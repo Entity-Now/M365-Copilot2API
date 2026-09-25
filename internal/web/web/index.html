@@ -1297,13 +1297,35 @@ function showNotice(msg,type='info'){
   setTimeout(()=>el.style.display='none',3000);
 }
 
-function showPage(p){
+function getInitialPage(){
+  try{
+    const qp=new URLSearchParams(window.location.search).get('page');
+    if(qp&&pages[qp])return qp;
+    const hash=window.location.hash.replace(/^#/,'');
+    if(hash&&pages[hash])return hash;
+  }catch(e){}
+  return 'dashboard';
+}
+
+function showPage(p,updateUrl=true){
+  if(!pages[p])p='dashboard';
   ['dashboard','usage','accounts','apikeys','conversations','proxies','modeltest','logs','settings'].forEach(k=>{
     const el=$('page-'+k);
     if(el) el.style.display=k===p?'block':'none';
     document.querySelectorAll('[data-page="'+k+'"]').forEach(btn=>btn.classList.toggle('active',k===p));
   });
   if($('pageTitle')) $('pageTitle').textContent=pages[p]||p;
+  if(updateUrl){
+    try{
+      const url=new URL(window.location.href);
+      if(p==='dashboard'){
+        url.searchParams.delete('page');
+      }else{
+        url.searchParams.set('page',p);
+      }
+      history.pushState({page:p},'',url.pathname+url.search+url.hash);
+    }catch(e){}
+  }
   if(p==='dashboard'){loadStats();loadOnboarding();loadAccounts();}
   else if(p==='usage')loadUsage();
   else if(p==='accounts')loadAccounts();
@@ -1314,6 +1336,10 @@ function showPage(p){
   else if(p==='logs')loadLogsPage();
   else if(p==='settings')loadSettings();
 }
+
+window.addEventListener('popstate',()=>{
+  showPage(getInitialPage(),false);
+});
 
 let onboardingHidden=false;
 function toggleOnboarding(){
@@ -1370,7 +1396,9 @@ $('loginForm')?.addEventListener('submit',async e=>{
     const d=await api('/api/admin/login',{method:'POST',body:JSON.stringify({password:$('loginPassword').value})});
     if(d.must_change_password){location.replace('/login');return;}
     $('login').style.display='none';$('app').style.display='flex';
-    showPage('dashboard');loadStats();
+    const initPage=getInitialPage();
+    showPage(initPage,false);
+    if(initPage!=='dashboard')loadOnboarding();
     showNotice('登录成功','success');
   }catch(e){showNotice(e.message,'error');}
 });
@@ -2164,8 +2192,8 @@ async function cleanupAll(){
   termOpen('cleanup — m365-copilot2api');
   termLine('正在向服务端发起一键深度清理请求…');
   try{
-    const res=await api('/api/m365/conversations/cleanup-all',{method:'POST',body:JSON.stringify({keep_n:0, include_active:false})});
-    termLine('✓ 服务端深度清理完成：已成功删除 '+res.deleted+' 个云端历史对话。','ok');
+    const res=await api('/api/m365/conversations/cleanup-all',{method:'POST',body:JSON.stringify({keep_n:0, include_active:true})});
+    termLine('✓ 服务端深度清理完成：已成功删除 '+res.deleted+' 个历史对话。','ok');
     showNotice('成功清理 '+res.deleted+' 个对话','success');
     loadConversations();
   }catch(e){
@@ -2335,7 +2363,13 @@ setInterval(()=>{if($('page-accounts').style.display!=='none')loadAccounts();},1
 try{lucide.createIcons();}catch(e){}
 fetch('/api/admin/session').then(r=>r.json()).then(d=>{
   if(d.authenticated&&d.must_change_password){location.replace('/login');}
-  else if(d.authenticated){$('login').style.display='none';$('app').style.display='flex';showPage('dashboard');loadStats();loadOnboarding();}
+  else if(d.authenticated){
+    $('login').style.display='none';
+    $('app').style.display='flex';
+    const initPage=getInitialPage();
+    showPage(initPage,false);
+    if(initPage!=='dashboard')loadOnboarding();
+  }
   else{$('login').style.display='grid';}
 }).catch(()=>{$('login').style.display='grid';});
 </script>

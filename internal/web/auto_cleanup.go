@@ -227,6 +227,20 @@ func (s *Server) activeConversationSet(window time.Duration) map[string]bool {
 // dropConversation 删除云端对话后联动清理本地索引与防串号绑定，
 // 防止后续请求复用已死的对话造成串号或幽灵会话。
 func (s *Server) dropConversation(convID string) {
-	s.conversationManager.Delete(convID)
-	s.sessionResolver.UnbindByConversation(convID)
+	if s.conversationManager != nil {
+		s.conversationManager.Delete(convID)
+	}
+	if s.sessionResolver != nil {
+		s.sessionResolver.UnbindByConversation(convID)
+	}
+	if s.userSessions != nil {
+		s.userSessions.DeleteByConversation(convID)
+	}
+	if s.sessions != nil {
+		for _, c := range s.sessions.list() {
+			if c.ConversationID == convID || c.ID == convID {
+				s.sessions.delete(c.ID)
+			}
+		}
+	}
 }

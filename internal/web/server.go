@@ -2143,11 +2143,16 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	// Ask the upstream model to select and validate the next tool. The gateway
 	// remains tool-agnostic; it only validates and serializes the decision.
 	if (planningMode == "router" || planningMode == "router_slim") && len(toolMaps) > 0 && fmt.Sprint(body.ToolChoice) != "none" {
+		useCompact := s.settings.get().EnableCompactToolRouter
+		useOnDemand := s.settings.get().EnableOnDemandToolSchema
+		if (useCompact || useOnDemand || planningMode == "router_slim") && isTrivialGreeting(prompt) && len(activeLedger.Completed) == 0 && fmt.Sprint(body.ToolChoice) != "required" {
+			log.Printf("[router-fastpath] id=%s skipping router for trivial greeting prompt=%q", requestID, prompt)
+		} else {
 		var routePrompt string
 		if planningMode == "router_slim" {
 			routePrompt = modelToolSlimRouterPrompt(prompt+"\n"+activeLedger.RouterContext(), toolMaps, body.ToolChoice)
 		} else {
-			routePrompt = modelToolRouterPrompt(prompt+"\n"+activeLedger.RouterContext(), toolMaps, body.ToolChoice)
+			routePrompt = modelToolRouterPrompt(prompt+"\n"+activeLedger.RouterContext(), toolMaps, body.ToolChoice, useCompact, useOnDemand)
 		}
 		log.Printf("[req-trace] id=%s stage=router_start mode=%s prompt_len=%d tools=%d", requestID, planningMode, len(routePrompt), len(toolMaps))
 		routeRes, routeErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: routePrompt, Tone: tone, Attachments: body.Attachments, LicenseType: toolCfg.LicenseType, Scenario: toolCfg.Scenario})
@@ -2210,18 +2215,24 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		if isSandboxHallucination(routeRes.Text) || isToolRefusal(routeRes.Text) {
 			log.Printf("[router-sandbox-eject] id=%s model hallucinated sandbox or refused tools: %q", requestID, compactToolResult(routeRes.Text, 120))
 			toolList := strings.Join(declaredToolNames(toolMaps), ", ")
-			var toolDefsBytes []byte
+			var toolDefsStr string
 			if planningMode == "router_slim" {
-				toolDefsBytes, _ = json.Marshal(compactToolSchemaList(toolMaps))
+				toolDefsStr = buildToolCompactSummary(toolMaps)
+			} else if useCompact {
+				toolDefsStr, _ = selectAndCompactTools(toolMaps, prompt)
+			} else if useOnDemand {
+				toolDefsStr, _ = formatOnDemandToolCatalog(toolMaps)
 			} else {
-				toolDefsBytes, _ = json.Marshal(toolMaps)
+				b, _ := json.Marshal(toolMaps)
+				toolDefsStr = string(b)
 			}
 			correctionText := fmt.Sprintf(`CRITICAL CORRECTION:
 You incorrectly claimed that files cannot be accessed or that /mnt/data is required, or hallucinated a cloud sandbox/container.
 1. You are running as an internal tool router for a local host. There is NO sandbox and NO /mnt/data. Never ask to upload ZIP archives or project files.
 2. The caller's tools execute directly in their local environment with full access to local files, Windows drives (C:\...), and workspace paths.
 3. Real client tools available: [%s]
-Tool definitions: %s
+Available tools:
+%s
 
 You MUST call the appropriate client tool now to inspect the workspace or perform the requested action.
 Do not provide explanations or chat text.
@@ -2232,7 +2243,7 @@ User request:
 OUTPUT FORMAT:
 CALL_TOOL: tool_name({"arg1":"value1"})
 
-Decision:`, toolList, string(toolDefsBytes), prompt+"\n"+activeLedger.RouterContext())
+Decision:`, toolList, toolDefsStr, prompt+"\n"+activeLedger.RouterContext())
 
 			retryRes, retryErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: correctionText, Tone: tone, Attachments: body.Attachments, LicenseType: toolCfg.LicenseType, Scenario: toolCfg.Scenario})
 			if retryErr == nil {
@@ -2361,15 +2372,20 @@ Decision:`, routePrompt, internalCall.Name, string(internalCall.Arguments), outp
 			return
 		}
 		if fmt.Sprint(body.ToolChoice) == "required" {
-			var defs []byte
+			var defsStr string
 			if planningMode == "router_slim" {
-				defs, _ = json.Marshal(compactToolSchemaList(toolMaps))
+				defsStr = buildToolCompactSummary(toolMaps)
+			} else if useCompact {
+				defsStr, _ = selectAndCompactTools(toolMaps, prompt)
+			} else if useOnDemand {
+				defsStr, _ = formatOnDemandToolCatalog(toolMaps)
 			} else {
-				defs, _ = json.Marshal(toolMaps)
+				b, _ := json.Marshal(toolMaps)
+				defsStr = string(b)
 			}
 			retryText := `Select at least one required next tool call from FUNCTION_DEFINITIONS. Validate every argument against its schema. Return JSON only as {"calls":[{"name":"function_name","arguments":{}}]}.
 APPLICATION_REQUEST_AND_EVIDENCE:
-` + prompt + "\n" + activeLedger.RouterContext() + "\nFUNCTION_DEFINITIONS:\n" + string(defs)
+` + prompt + "\n" + activeLedger.RouterContext() + "\nFUNCTION_DEFINITIONS:\n" + defsStr
 			retryRes, retryErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: retryText, Tone: tone, Attachments: body.Attachments, LicenseType: toolCfg.LicenseType, Scenario: toolCfg.Scenario})
 			if retryErr == nil {
 				s.dropTransientConversation(acc.ID, retryRes.ConversationID)
@@ -2391,6 +2407,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 			}
 			writeOpenAIError(w, http.StatusBadGateway, "upstream_error", "model did not select a required tool after constrained retry")
 			return
+		}
 		}
 	}
 	if body.Stream {
