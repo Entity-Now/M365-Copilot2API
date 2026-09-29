@@ -2,6 +2,7 @@ package web
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -19,10 +20,13 @@ func TestModelToneOpusAndGpt6(t *testing.T) {
 		{"claude-opus-5[1m]", "Claude_Opus"},
 		{"claude-opus-4.5", "Claude_Opus"},
 		{"gpt-6", "Gpt_6_Reasoning"},
+		{"gpt-6-sol", "Gpt_6_Reasoning"},
+		{"gpt-6.0-sol", "Gpt_6_Reasoning"},
 		{"gpt-6-reasoning", "Gpt_6_Reasoning"},
 		{"gpt-6-think-deeper", "Gpt_6_Reasoning"},
 		{"gpt-5.6", "Gpt_5_6_Chat"},
 		{"gpt-5.6-quick", "Gpt_5_6_Chat"},
+		{"gpt-5.6-sol", "Gpt_5_6_Reasoning"},
 		{"gpt-5.6-think-deeper", "Gpt_5_6_Reasoning"},
 		{"quick", "Gpt_5_5_Chat"},
 		{"think-deeper", "Gpt_5_5_Reasoning"},
@@ -207,3 +211,52 @@ func TestPublicIdentityGPT6AndClaudeOpus(t *testing.T) {
 		t.Errorf("expected Claude family in answer, got: %s", ansOpus)
 	}
 }
+
+func TestCategoryModelEntitlementDoesNotCooldownAccount(t *testing.T) {
+	err := fmt.Errorf("upstream result error: ForbiddenRequest")
+	cat := ClassifyError(err)
+	if cat != CategoryModelEntitlement {
+		t.Fatalf("expected CategoryModelEntitlement, got %v", cat)
+	}
+
+	h := &accountHealth{
+		cooldown: make(map[string]time.Time),
+		authFail: make(map[string]bool),
+	}
+	h.MarkFailure("test-acc", err, 30*time.Second)
+	if _, inCooldown := h.cooldown["test-acc"]; inCooldown {
+		t.Fatalf("ForbiddenRequest model entitlement failure must NOT put account into cooldown")
+	}
+	if h.authFail["test-acc"] {
+		t.Fatalf("ForbiddenRequest model entitlement failure must NOT mark account auth as failed")
+	}
+}
+
+func TestConsumerVsEnterpriseAccount(t *testing.T) {
+	consumerAcc := chathub.Account{TID: chathub.ConsumerTenantID}
+	if !chathub.IsConsumerAccount(consumerAcc) {
+		t.Errorf("expected consumer account to be recognized")
+	}
+
+	enterpriseAcc := chathub.Account{TID: "c1868322-2621-4a57-814e-b5dc5f2f5341"} // corporate tenant ID
+	if chathub.IsConsumerAccount(enterpriseAcc) {
+		t.Errorf("enterprise account must NOT be flagged as consumer account")
+	}
+}
+
+func TestModelCatalogContainsGPT6Sol(t *testing.T) {
+	catalog := modelCatalog()
+	foundSol := false
+	for _, m := range catalog {
+		id, _ := m["id"].(string)
+		if id == "gpt-6-sol" || id == "gpt-6.0-sol" {
+			foundSol = true
+			break
+		}
+	}
+	if !foundSol {
+		t.Errorf("expected modelCatalog to contain gpt-6-sol or gpt-6.0-sol")
+	}
+}
+
+

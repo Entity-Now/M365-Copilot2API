@@ -31,6 +31,7 @@ const (
 	CategoryWSHandshake        ErrorCategory = "WS_HANDSHAKE"
 	CategoryWSReadTimeout      ErrorCategory = "WS_READ_TIMEOUT"
 	CategoryUpstreamStructured ErrorCategory = "UPSTREAM_STRUCTURED"
+	CategoryModelEntitlement   ErrorCategory = "MODEL_ENTITLEMENT"
 	CategoryClientCanceled     ErrorCategory = "CLIENT_CANCELED"
 	CategoryGlobalUnavailable  ErrorCategory = "GLOBAL_UNAVAILABLE"
 	CategoryUnknown            ErrorCategory = "UNKNOWN"
@@ -174,6 +175,8 @@ func ClassifyError(err error) ErrorCategory {
 		return CategoryClientCanceled
 	case strings.Contains(msg, "empty completion") || strings.Contains(msg, "offensive") || strings.Contains(msg, "image limit"):
 		return CategoryUpstreamStructured
+	case strings.Contains(msg, "forbiddenrequest"):
+		return CategoryModelEntitlement
 	}
 	return CategoryUnknown
 }
@@ -817,6 +820,10 @@ func (h *accountHealth) MarkFailure(accountID string, err error, window time.Dur
 		delete(h.authFail, accountID)
 		delete(h.authFailReason, accountID)
 		h.cooldown[accountID] = time.Now().Add(CooldownForCategory(cat, 0, 1))
+		return
+	case CategoryModelEntitlement:
+		// Model-specific entitlement error (e.g. ForbiddenRequest for Claude Opus on Included license).
+		// The account itself is completely healthy and credentials are valid; do NOT penalize or cool down the account.
 		return
 	default:
 		delete(h.authFail, accountID)

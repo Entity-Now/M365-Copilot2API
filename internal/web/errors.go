@@ -32,6 +32,9 @@ func upstreamError(err error) string {
 	if ClassifyError(err) == CategoryClientCanceled {
 		return "client canceled request"
 	}
+	if ClassifyError(err) == CategoryModelEntitlement {
+		return "upstream model access forbidden: account lacks required paid/premium Copilot license"
+	}
 	log.Printf("upstream request failed: %v", err)
 	return "upstream request failed"
 }
@@ -66,7 +69,7 @@ func upstreamStatus(err error) int {
 	}
 	cat := ClassifyError(err)
 	switch cat {
-	case CategoryUserBanned:
+	case CategoryUserBanned, CategoryModelEntitlement:
 		return http.StatusForbidden
 	case CategoryUserThrottled:
 		return http.StatusTooManyRequests
@@ -178,7 +181,7 @@ func IsRetryable(err error) bool {
 		CategoryGlobalUnavailable:
 		return true
 	case CategoryForbidden403, CategoryAuthExpired401,
-		CategoryUserBanned, CategoryClientCanceled:
+		CategoryUserBanned, CategoryClientCanceled, CategoryModelEntitlement:
 		return false
 	default:
 		return false

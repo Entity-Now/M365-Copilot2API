@@ -568,6 +568,30 @@ func (s *Store) EnsureValid(id string) (AccountToken, error) {
 	return s.refreshInflight(acc)
 }
 
+func (s *Store) ForceRefresh(id string) (AccountToken, error) {
+	s.mu.Lock()
+	var acc AccountToken
+	found := false
+	for _, a := range s.data.Accounts {
+		if a.ID == id || a.OID == id || a.Email == id {
+			acc = a
+			found = true
+			break
+		}
+	}
+	if !found {
+		s.mu.Unlock()
+		return AccountToken{}, os.ErrNotExist
+	}
+	if acc.RefreshToken == "" {
+		s.mu.Unlock()
+		return acc, fmt.Errorf("no refresh token available, please re-authenticate")
+	}
+	s.mu.Unlock()
+	return s.refreshInflight(acc)
+}
+
+
 func (s *Store) refreshInflight(acc AccountToken) (AccountToken, error) {
 	s.mu.Lock()
 	if s.inflight == nil {

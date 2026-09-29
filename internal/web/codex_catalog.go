@@ -69,6 +69,9 @@ var gatewayModels = []modelSpec{
 	{ID: "gpt-5.5-reasoning", Owner: "microsoft-365", Tools: true},
 	{ID: "gpt-5.6", Owner: "microsoft-365", Tools: true},
 	{ID: "gpt-5.6-reasoning", Owner: "microsoft-365", Tools: true},
+	{ID: "gpt-6-sol", Owner: "microsoft-365", DisplayName: "GPT 6.0 Sol", Tools: true},
+	{ID: "gpt-6.0-sol", Owner: "microsoft-365", DisplayName: "GPT 6.0 Sol", Tools: true},
+	{ID: "gpt-6", Owner: "microsoft-365", Tools: true},
 	{ID: "gpt-6-reasoning", Owner: "microsoft-365", Tools: true},
 	{ID: "gpt-image-2", Owner: "microsoft-365", DisplayName: "GPT Image 2", Tools: true},
 	{ID: "claude-sonnet", Owner: "anthropic-via-microsoft-365", Tools: true},
@@ -197,7 +200,7 @@ func supportedChatModel(model string) bool {
 	}
 	m := strings.ToLower(model)
 	switch m {
-	case "gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6", "gpt-6-reasoning", "claude-opus", "claude-opus-5":
+	case "gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6", "gpt-6-sol", "gpt-6.0-sol", "gpt-6-reasoning", "gpt-6-think-deeper", "claude-opus", "claude-opus-5":
 		return true
 	}
 	if strings.Contains(m, "opus") || strings.HasPrefix(m, "gpt-6") {
@@ -300,7 +303,7 @@ func reasoningTone(model, effort string) (string, error) {
 		return "Gpt_5_5_Reasoning", nil
 	case "gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna":
 		return "Gpt_5_6_Reasoning", nil
-	case "gpt-6", "gpt-6-reasoning", "gpt-6-think-deeper":
+	case "gpt-6", "gpt-6-sol", "gpt-6.0-sol", "gpt-6-reasoning", "gpt-6-think-deeper":
 		return "Gpt_6_Reasoning", nil
 	default:
 		if strings.Contains(strings.ToLower(model), "opus") {

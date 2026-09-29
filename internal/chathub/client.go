@@ -64,8 +64,16 @@ func checkMeteringError(mi any) error {
 	return nil
 }
 
+// ConsumerTenantID is Microsoft's well-known tenant ID for personal/consumer accounts (MSA).
+const ConsumerTenantID = "9188040d-6c67-4c5b-b112-36a304b66dad"
+
+// IsConsumerAccount checks if the account is a personal Microsoft account (MSA) vs an enterprise tenant.
+func IsConsumerAccount(acc Account) bool {
+	return strings.EqualFold(strings.TrimSpace(acc.TID), ConsumerTenantID)
+}
+
 // IsPaidScenarioTone checks if the requested tone is entitlement-gated under
-// the OfficeWebPaidCopilot scenario (e.g. Claude Opus and GPT-6).
+// the OfficeWebPaidCopilot scenario (e.g. Claude Opus and consumer GPT-6).
 func IsPaidScenarioTone(tone string) bool {
 	switch strings.ToLower(strings.TrimSpace(tone)) {
 	case "claude_opus", "gpt_6_reasoning":
@@ -552,13 +560,22 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 	if req.Tone == "" {
 		req.Tone = defaultTone
 	}
-	if IsPaidScenarioTone(req.Tone) {
+	// For consumer Copilot Pro accounts, Opus and consumer GPT-6 require OfficeWebPaidCopilot/Premium.
+	// For enterprise tenants (Work/School Entra ID), OfficeWebPaidCopilot is rejected by Microsoft;
+	// enterprise Copilot sessions run strictly under OfficeWebIncludedCopilot / Starter.
+	if IsPaidScenarioTone(req.Tone) && IsConsumerAccount(acc) {
 		if req.Scenario == "" || req.Scenario == "OfficeWebIncludedCopilot" {
 			req.Scenario = "OfficeWebPaidCopilot"
 		}
 		if req.LicenseType == "" || req.LicenseType == "Starter" {
 			req.LicenseType = "Premium"
 		}
+	}
+	if req.Scenario == "" {
+		req.Scenario = "OfficeWebIncludedCopilot"
+	}
+	if req.LicenseType == "" {
+		req.LicenseType = "Starter"
 	}
 	firstTurn := req.Started
 	if req.SessionID == "" {
@@ -1176,14 +1193,22 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 					if res, ok := item["result"].(map[string]any); ok {
 						rawResult, _ = res["value"].(string)
 						if rawResult != "" && rawResult != "Success" {
-							log.Printf("[chathub] result.value=%q (non-Success)", rawResult)
+							log.Printf("[chathub] result non-Success: value=%q details=%+v item=%+v", rawResult, res, item)
 							low := strings.ToLower(rawResult)
 							if strings.Contains(low, "throttl") {
 								returnConn = false
 								return Result{}, ErrMeteringThrottled
 							}
 							returnConn = false
-							return Result{}, fmt.Errorf("upstream result error: %s", rawResult)
+							errMsg := rawResult
+							if m, ok := res["message"].(string); ok && m != "" {
+								errMsg = fmt.Sprintf("%s: %s", rawResult, m)
+							} else if m, ok := res["description"].(string); ok && m != "" {
+								errMsg = fmt.Sprintf("%s: %s", rawResult, m)
+							} else if m, ok := item["error"].(string); ok && m != "" {
+								errMsg = fmt.Sprintf("%s: %s", rawResult, m)
+							}
+							return Result{}, fmt.Errorf("upstream result error: %s", errMsg)
 						}
 						if mi, ok := res["meteringInformation"]; ok && mi != nil {
 							meteringInformation = mi

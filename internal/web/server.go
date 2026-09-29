@@ -829,7 +829,7 @@ func (s *Server) refreshAccount(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "bad json")
 		return
 	}
-	acc, err := s.tokens.EnsureValid(strings.TrimSpace(body.ID))
+	acc, err := s.tokens.ForceRefresh(strings.TrimSpace(body.ID))
 	if err != nil {
 		writeOpenAIError(w, http.StatusBadGateway, "token_refresh_error", err.Error())
 		return
@@ -1463,7 +1463,7 @@ func modelTone(model string) string {
 		return "Gpt_5_6_Chat"
 	case "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.6-reasoning", "gpt-5.6-think-deeper":
 		return "Gpt_5_6_Reasoning"
-	case "gpt-6", "gpt-6-reasoning", "gpt-6-think-deeper":
+	case "gpt-6", "gpt-6-sol", "gpt-6.0-sol", "gpt-6-reasoning", "gpt-6-think-deeper":
 		return "Gpt_6_Reasoning"
 	case "claude-opus", "claude-opus-5", "claude-opus-4.5":
 		return "Claude_Opus"
@@ -1791,18 +1791,47 @@ func (s *Server) adminModelTest(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	ctx, cancel := context.WithTimeout(r.Context(), time.Duration(s.settings.get().ChatTimeoutSeconds)*time.Second)
 	defer cancel()
+	release, err := s.accountConcurrency.Acquire(ctx, acc.ID)
+	if err != nil {
+		writeUpstreamError(w, err)
+		return
+	}
+	defer release()
 	testCfg := s.settings.get()
-	res, err := s.chatWithAccount(ctx, acc.ID, chathub.Account{AccessToken: acc.AccessToken, OID: acc.OID, TID: acc.TID}, chathub.Request{
+	scenario := testCfg.Scenario
+	licenseType := testCfg.LicenseType
+	if !chathub.IsConsumerAccount(chathub.Account{TID: acc.TID}) {
+		if scenario == "" || scenario == "OfficeWebPaidCopilot" {
+			scenario = "OfficeWebIncludedCopilot"
+		}
+		if licenseType == "" || licenseType == "Premium" {
+			licenseType = "Starter"
+		}
+	}
+	res, err := s.accountClient(acc.ID).Chat(ctx, chathub.Account{AccessToken: acc.AccessToken, OID: acc.OID, TID: acc.TID}, chathub.Request{
 		Text:         `Say "OK" in one word.`,
 		Tone:         tone,
-		LicenseType:  testCfg.LicenseType,
-		Scenario:     testCfg.Scenario,
+		LicenseType:  licenseType,
+		Scenario:     scenario,
 		FeatureFlags: s.featureFlags(),
 	})
 	ms := time.Since(start).Milliseconds()
 	if err != nil {
-		writeOpenAIError(w, http.StatusBadGateway, "m365_error", upstreamError(err))
+		errStr := err.Error()
+		switch {
+		case strings.Contains(errStr, "ForbiddenRequest"):
+			writeOpenAIError(w, http.StatusForbidden, "model_forbidden", "当前账号无此模型的商业/付费授权 (ForbiddenRequest: Account lacks Paid Copilot license)")
+		case strings.Contains(errStr, "InternalError"):
+			writeOpenAIError(w, http.StatusBadGateway, "upstream_internal_error", "上游返回 InternalError (当前账号不可用该模型 Tone 或可用配额为0。如需使用可用模型，可切换为 gpt-5.6-sol / gpt-5.5，或在设置中配置自定义模型映射)")
+		case errors.Is(err, chathub.ErrPriorityAccessExhausted):
+			writeOpenAIError(w, http.StatusTooManyRequests, "priority_access_exhausted", "该模型今日优先访问配额已耗尽")
+		default:
+			writeOpenAIError(w, http.StatusBadGateway, "m365_error", upstreamError(err))
+		}
 		return
+	}
+	if s.accountPool != nil {
+		s.accountPool.MarkSuccess(acc.ID)
 	}
 	if res.ConversationID != "" {
 		s.dropTransientConversation(acc.ID, acc.AccessToken, res.ConversationID)
@@ -2232,7 +2261,6 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		} else {
 			routePrompt = modelToolRouterPrompt(prompt+"\n"+activeLedger.RouterContext(), toolMaps, body.ToolChoice, useCompact, useOnDemand)
 		}
-		log.Printf("[req-trace] id=%s stage=router_start mode=%s prompt_len=%d tools=%d tool_names=[%s]", requestID, planningMode, len(routePrompt), len(toolMaps), strings.Join(declaredToolNames(toolMaps), ", "))
 		routeRes, routeErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: routePrompt, Tone: tone, Attachments: body.Attachments, LicenseType: toolCfg.LicenseType, Scenario: toolCfg.Scenario})
 		if routeErr != nil {
 			if requestedAccountID == "" && (IsRateLimited(routeErr) || IsAuthFailure(routeErr)) {
