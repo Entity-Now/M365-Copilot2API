@@ -209,6 +209,52 @@ func (c *M365CloudClient) DeleteConversation(conversationID string) error {
 	return err
 }
 
+func DeleteConversationDirect(httpClient *http.Client, token string, conversationID string) error {
+	if strings.TrimSpace(token) == "" || strings.TrimSpace(conversationID) == "" {
+		return fmt.Errorf("token and conversationId required")
+	}
+	if httpClient == nil {
+		httpClient = &http.Client{Timeout: 15 * time.Second}
+	}
+	emptyChats := map[string]any{"chats": []any{}}
+	reqBody := map[string]any{
+		"action":         "DeleteConversation",
+		"conversationId": conversationID,
+		"state": map[string]any{
+			"conversationPageHistoryList":     emptyChats,
+			"taskConversationPageHistoryList": emptyChats,
+		},
+	}
+	jsonBody, err := json.Marshal(reqBody)
+	if err != nil {
+		return fmt.Errorf("marshal request: %w", err)
+	}
+
+	req, err := http.NewRequest("POST", "https://m365.cloud.microsoft/chat", io.NopCloser(stringReader(string(jsonBody))))
+	if err != nil {
+		return fmt.Errorf("create request: %w", err)
+	}
+
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/plain, */*")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:148.0) Gecko/20100101 Firefox/148.0")
+	req.Header.Set("Origin", "https://m365.cloud.microsoft")
+	req.Header.Set("Referer", "https://m365.cloud.microsoft/")
+	req.Header.Set("X-Requested-With", "XMLHttpRequest")
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("do request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("upstream returned status %d", resp.StatusCode)
+	}
+	return nil
+}
+
 func (c *M365CloudClient) ListConversations() ([]map[string]any, error) {
 	result, err := c.doAPI("RefreshNavPane", map[string]any{})
 	if err != nil {

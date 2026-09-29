@@ -47,11 +47,30 @@ func (s *Server) StartAutoCleanup() {
 
 	log.Printf("[auto-cleanup] enabled interval=%s max_age=%s keep_n=%d", interval, maxAge, keepN)
 	go func() {
+		// 启动后延迟 5 秒立即执行一次全面清理，快速清除历史遗留的瞬态路由垃圾会话
+		time.Sleep(5 * time.Second)
+		s.autoCleanupOnce(maxAge, keepN)
 		for {
 			time.Sleep(interval)
 			s.autoCleanupOnce(maxAge, keepN)
 		}
 	}()
+}
+
+// isTransientConversationPattern 检查是否包含瞬态工具选择路由提示词
+func isTransientConversationPattern(texts ...string) bool {
+	for _, text := range texts {
+		t := strings.ToLower(text)
+		if strings.Contains(t, "you are a tool selection assistant") ||
+			strings.Contains(t, "available tools") ||
+			strings.Contains(t, "router mandatory directive") ||
+			strings.Contains(t, "call_tool:") ||
+			strings.Contains(t, "critical correction:") ||
+			strings.Contains(t, "gateway tool inspection") {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) autoCleanupOnce(maxAge time.Duration, keepN int) {
@@ -146,6 +165,19 @@ func (s *Server) autoCleanupAccount(accountID string, client *M365CloudClient, m
 			if convID == "" {
 				continue
 			}
+			title, _ := chat["chatName"].(string)
+			if title == "" {
+				title, _ = chat["title"].(string)
+			}
+			snippet, _ := chat["snippet"].(string)
+
+			// 只要匹配瞬态路由提示词，直接视为必须清除的垃圾对话，不受 active 和 keepN 保护！
+			if isTransientConversationPattern(title, snippet) {
+				log.Printf("[auto-cleanup] identified transient router conversation id=%s title=%q, queuing for immediate purge", convID, title)
+				stale = append(stale, cand{convID, 0})
+				continue
+			}
+
 			boundAccountID, bound, ambiguous := s.sessionResolver.ConversationAccountState(convID)
 			if ambiguous || (bound && boundAccountID != accountID) {
 				if ambiguous {

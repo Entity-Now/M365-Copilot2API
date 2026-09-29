@@ -227,7 +227,105 @@ func sanitizePublicInternalText(text string) string {
 	return publicProviderIdentityPattern.ReplaceAllString(text, publicAssistantIdentity)
 }
 
+// stripReplacementChars removes U+FFFD replacement characters produced by
+// upstream byte-level truncation. It always applies, independent of the
+// opt-in identity policy, because U+FFFD is never legitimate content.
+//
+// IndexRune treats both a literal U+FFFD and any invalid UTF-8 byte as
+// RuneError, but ReplaceAll only removes the encoded U+FFFD sequence. A rune
+// split across upstream fragments leaves raw invalid bytes behind, and
+// encoding/json would then re-introduce U+FFFD when it marshals the value for
+// the client. ToValidUTF8 drops those leftover bytes so the client never sees
+// a replacement character.
+func stripReplacementChars(text string) string {
+	if text == "" || strings.IndexRune(text, utf8.RuneError) < 0 {
+		return text
+	}
+	text = strings.ReplaceAll(text, string(utf8.RuneError), "")
+	if utf8.ValidString(text) {
+		return text
+	}
+	return strings.ToValidUTF8(text, "")
+}
+
+// utf8SafeCut returns the byte length of the longest prefix of s that ends on a
+// complete UTF-8 sequence boundary. An incomplete trailing sequence is held
+// back so a rune split across upstream fragments is reassembled on the next
+// fragment instead of being dropped or turned into U+FFFD.
+func utf8SafeCut(s string) int {
+	n := len(s)
+	for i := 1; i <= 3 && i <= n; i++ {
+		c := s[n-i]
+		if c < 0x80 {
+			return n
+		}
+		if c&0xC0 != 0x80 {
+			size := 1
+			switch {
+			case c&0xF8 == 0xF0:
+				size = 4
+			case c&0xF0 == 0xE0:
+				size = 3
+			case c&0xE0 == 0xC0:
+				size = 2
+			}
+			if i == size {
+				return n
+			}
+			return n - i
+		}
+	}
+	return n
+}
+
+var (
+	citationOpen  = string(rune(0xE200)) + "cite" + string(rune(0xE202))
+	citationClose = string(rune(0xE201))
+)
+
+// stripCitationMarkersStream strips Microsoft Copilot upstream citation control
+// markers (\uE200cite\uE202...\uE201) from streaming output. Complete markers
+// are dropped; an incomplete marker at the end of fragment is held back in the
+// returned rest string so a marker split across fragments is stripped cleanly
+// rather than leaking its prefix or suffix to the client (issue #79).
+func stripCitationMarkersStream(pending string) (string, string) {
+	if pending == "" {
+		return "", ""
+	}
+	var b strings.Builder
+	for {
+		i := strings.Index(pending, citationOpen)
+		if i < 0 {
+			break
+		}
+		b.WriteString(pending[:i])
+		after := pending[i+len(citationOpen):]
+		j := strings.Index(after, citationClose)
+		if j < 0 {
+			// Incomplete marker: keep from the marker start.
+			return b.String(), pending[i:]
+		}
+		pending = after[j+len(citationClose):]
+	}
+	// Hold back a trailing partial marker prefix so a marker split across
+	// fragments is not emitted half-formed.
+	keep := 0
+	max := len(citationOpen) - 1
+	if max > len(pending) {
+		max = len(pending)
+	}
+	for n := max; n > 0; n-- {
+		if strings.HasSuffix(pending, citationOpen[:n]) {
+			keep = n
+			break
+		}
+	}
+	b.WriteString(pending[:len(pending)-keep])
+	return b.String(), pending[len(pending)-keep:]
+}
+
 func sanitizePublicReasoningText(text string) string {
+	text = stripReplacementChars(text)
 	if !publicIdentityPolicyEnabled() {
 		return text
 	}
@@ -245,6 +343,7 @@ func sanitizePublicAssistantTextWithStateForModel(text string, identityWritten *
 	if text == "" {
 		return ""
 	}
+	text = stripReplacementChars(text)
 	text = publicInternalCitationPattern.ReplaceAllString(text, "")
 	var out strings.Builder
 	written := identityWritten != nil && *identityWritten
@@ -388,6 +487,7 @@ func sanitizePublicJSONValue(value any) any {
 
 type publicIdentityStreamFilter struct {
 	pending         string
+	citePending     string
 	identityWritten bool
 	model           string
 }
@@ -405,7 +505,14 @@ func (f *publicIdentityStreamFilter) Push(fragment string) string {
 		return sanitizePublicAssistantText(fragment)
 	}
 	if !publicIdentityPolicyEnabled() {
-		return fragment
+		f.pending += fragment
+		cut := utf8SafeCut(f.pending)
+		out := f.pending[:cut]
+		f.pending = f.pending[cut:]
+		f.citePending += stripReplacementChars(out)
+		cleaned, rest := stripCitationMarkersStream(f.citePending)
+		f.citePending = rest
+		return cleaned
 	}
 	f.pending += fragment
 	return f.consume(false)
@@ -416,9 +523,11 @@ func (f *publicIdentityStreamFilter) Flush() string {
 		return ""
 	}
 	if !publicIdentityPolicyEnabled() {
-		out := f.pending
+		out := stripReplacementChars(f.pending)
 		f.pending = ""
-		return out
+		cleaned, _ := stripCitationMarkersStream(f.citePending + out)
+		f.citePending = ""
+		return cleaned
 	}
 	out := f.consume(true)
 	f.pending = ""
@@ -454,7 +563,8 @@ func (f *publicIdentityStreamFilter) consume(final bool) string {
 }
 
 type publicReasoningStreamFilter struct {
-	pending string
+	pending     string
+	citePending string
 }
 
 func newPublicReasoningStreamFilter() *publicReasoningStreamFilter {
@@ -466,7 +576,14 @@ func (f *publicReasoningStreamFilter) Push(fragment string) string {
 		return sanitizePublicReasoningText(fragment)
 	}
 	if !publicIdentityPolicyEnabled() {
-		return fragment
+		f.pending += fragment
+		cut := utf8SafeCut(f.pending)
+		out := f.pending[:cut]
+		f.pending = f.pending[cut:]
+		f.citePending += stripReplacementChars(out)
+		cleaned, rest := stripCitationMarkersStream(f.citePending)
+		f.citePending = rest
+		return cleaned
 	}
 	f.pending += fragment
 	return f.consume(false)
@@ -477,9 +594,11 @@ func (f *publicReasoningStreamFilter) Flush() string {
 		return ""
 	}
 	if !publicIdentityPolicyEnabled() {
-		out := f.pending
+		out := stripReplacementChars(f.pending)
 		f.pending = ""
-		return out
+		cleaned, _ := stripCitationMarkersStream(f.citePending + out)
+		f.citePending = ""
+		return cleaned
 	}
 	out := sanitizePublicReasoningText(f.pending)
 	f.pending = ""

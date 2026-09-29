@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 func TestMain(m *testing.M) {
@@ -405,3 +406,91 @@ func TestProtocolAdaptersSanitizeAssistantIdentity(t *testing.T) {
 		})
 	}
 }
+
+// splitCJK splits a 3-byte rune into a 2-byte prefix and a 1-byte tail, the
+// exact shape upstream byte-level truncation produces.
+func splitCJK(t *testing.T) (string, string, string) {
+	t.Helper()
+	full := "你好世"
+	prefix := full[:len(full)-1]
+	tail := full[len(full)-1:]
+	if utf8.ValidString(prefix) || utf8.ValidString(tail) {
+		t.Fatal("fixture did not split a rune")
+	}
+	return full, prefix, tail
+}
+
+func TestStripReplacementCharsDropsRawInvalidUTF8(t *testing.T) {
+	_, prefix, tail := splitCJK(t)
+	for _, in := range []string{prefix, tail} {
+		got := stripReplacementChars(in)
+		if !utf8.ValidString(got) || strings.ContainsRune(got, utf8.RuneError) {
+			t.Fatalf("stripReplacementChars(%q)=%q is not clean UTF-8", in, got)
+		}
+	}
+}
+
+func TestUTF8SafeCutHoldsBackIncompleteSequence(t *testing.T) {
+	full, prefix, _ := splitCJK(t)
+	if got := utf8SafeCut(prefix); got != len("你好") {
+		t.Fatalf("utf8SafeCut(prefix)=%d want %d", got, len("你好"))
+	}
+	if got := utf8SafeCut(full); got != len(full) {
+		t.Fatalf("utf8SafeCut(full)=%d want %d", got, len(full))
+	}
+	if got := utf8SafeCut("abc"); got != 3 {
+		t.Fatalf("utf8SafeCut(abc)=%d want 3", got)
+	}
+}
+
+func TestStreamFilterReassemblesSplitRune(t *testing.T) {
+	t.Setenv("M365_PUBLIC_IDENTITY_POLICY", "")
+	full, prefix, tail := splitCJK(t)
+	f := newPublicIdentityStreamFilter("gpt-5.6-sol")
+	var out strings.Builder
+	out.WriteString(f.Push(prefix))
+	out.WriteString(f.Push(tail))
+	out.WriteString(f.Flush())
+	if out.String() != full {
+		t.Fatalf("stream reassembled=%q want %q", out.String(), full)
+	}
+	rf := newPublicReasoningStreamFilter()
+	var rout strings.Builder
+	rout.WriteString(rf.Push(prefix))
+	rout.WriteString(rf.Push(tail))
+	rout.WriteString(rf.Flush())
+	if rout.String() != full {
+		t.Fatalf("reasoning reassembled=%q want %q", rout.String(), full)
+	}
+}
+
+func TestStripCitationMarkersStreamRemovesCompleteAndSplitMarkers(t *testing.T) {
+	marker := citationOpen + "turn0search1" + citationClose
+	if got, rest := stripCitationMarkersStream("hello " + marker + " world"); got != "hello  world" || rest != "" {
+		t.Fatalf("complete marker got=%q rest=%q", got, rest)
+	}
+	f1 := "hello " + citationOpen + "turn0"
+	f2 := "search1" + citationClose + " world"
+	got1, rest1 := stripCitationMarkersStream(f1)
+	got2, rest2 := stripCitationMarkersStream(rest1 + f2)
+	if got1 != "hello " || got2 != " world" || rest2 != "" {
+		t.Fatalf("split marker got1=%q got2=%q rest2=%q", got1, got2, rest2)
+	}
+}
+
+func TestIdentityStreamFilterStripsCitationMarkers(t *testing.T) {
+	t.Setenv("M365_PUBLIC_IDENTITY_POLICY", "")
+	marker := citationOpen + "turn1search2" + citationClose
+	f := newPublicIdentityStreamFilter("gpt-5.5")
+	var out strings.Builder
+	out.WriteString(f.Push("答案"))
+	out.WriteString(f.Push(marker + "结论"))
+	out.WriteString(f.Flush())
+	if strings.Contains(out.String(), citationOpen) || strings.Contains(out.String(), citationClose) {
+		t.Fatalf("citation marker leaked: %q", out.String())
+	}
+	if out.String() != "答案结论" {
+		t.Fatalf("unexpected stripped text: %q", out.String())
+	}
+}
+

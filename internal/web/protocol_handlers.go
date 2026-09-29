@@ -197,6 +197,7 @@ func (s *Server) streamResponsesAdapter(w http.ResponseWriter, r *http.Request, 
 				callID, _ := tc["id"].(string)
 				fn, _ := tc["function"].(map[string]any)
 				name, _ := fn["name"].(string)
+				args, _ := fn["arguments"].(string)
 				if st == nil {
 					prefix := "fc_"
 					item := map[string]any{"type": "function_call", "call_id": callID, "name": name, "arguments": "", "status": "in_progress"}
@@ -204,7 +205,7 @@ func (s *Server) streamResponsesAdapter(w http.ResponseWriter, r *http.Request, 
 						prefix = "ctc_"
 						item = map[string]any{"type": "custom_tool_call", "call_id": callID, "name": name, "input": "", "status": "in_progress"}
 					}
-					st = &tcState{ID: callID, Name: name, ItemID: prefix + uuid.NewString(), Type: typ}
+					st = &tcState{ItemID: prefix + uuid.NewString(), Type: typ, ID: callID, Name: name}
 					calls[idx] = st
 					item["id"] = st.ItemID
 					emit("response.output_item.added", map[string]any{"type": "response.output_item.added", "output_index": idx, "item": item})
@@ -212,12 +213,14 @@ func (s *Server) streamResponsesAdapter(w http.ResponseWriter, r *http.Request, 
 					if callID != "" {
 						st.ID = callID
 					}
-					st.Name += name
+					if name != "" {
+						st.Name += name
+					}
 				}
-				if v, ok := fn["arguments"].(string); ok {
-					st.Args += v
+				if args != "" {
+					st.Args += args
 					if st.Type != "custom" {
-						emit("response.function_call_arguments.delta", map[string]any{"type": "response.function_call_arguments.delta", "output_index": idx, "item_id": st.ItemID, "delta": v})
+						emit("response.function_call_arguments.delta", map[string]any{"type": "response.function_call_arguments.delta", "output_index": idx, "item_id": st.ItemID, "delta": args})
 					}
 				}
 			}

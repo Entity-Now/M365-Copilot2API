@@ -27,6 +27,7 @@ type responsesRequest struct {
 	Temperature        *float64         `json:"temperature,omitempty"`
 	TopP               *float64         `json:"top_p,omitempty"`
 	MaxOutputTokens    *int             `json:"max_output_tokens,omitempty"`
+	Metadata           *oaiMetadata     `json:"metadata,omitempty"`
 	Include            []string         `json:"include,omitempty"`
 	Text               map[string]any   `json:"text,omitempty"`
 	ServiceTier        string           `json:"service_tier,omitempty"`
@@ -35,6 +36,19 @@ type responsesRequest struct {
 
 func (r responsesRequest) openAI() (oaiReq, error) {
 	o := oaiReq{Model: r.Model, AccountID: r.AccountID, Stream: r.Stream, ToolChoice: r.ToolChoice, ParallelToolCalls: r.ParallelToolCalls, Reasoning: r.Reasoning, User: r.User}
+	// Forward request metadata so /v1/responses clients can use
+	// metadata.copilot_temp_session, and treat new_conversation as an explicit
+	// request to avoid reusing the cached conversation (issue #79).
+	if r.Metadata != nil || r.NewConversation {
+		m := oaiMetadata{}
+		if r.Metadata != nil {
+			m = *r.Metadata
+		}
+		if r.NewConversation {
+			m.CopilotTempSession = true
+		}
+		o.Metadata = &m
+	}
 	// include/text/service_tier/context_management are parsed but deliberately
 	// ignored: the gateway has no semantics for them and newer Codex clients
 	// always send include (e.g. reasoning.encrypted_content) on /responses.

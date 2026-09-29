@@ -568,11 +568,26 @@ func (s *Server) handleM365CleanupAll(w http.ResponseWriter, r *http.Request) {
 			}
 
 			var candidates []cand
+			anyDeleted := false
 			for _, chat := range chats {
 				convID, _ := chat["conversationId"].(string)
 				if convID == "" {
 					continue
 				}
+				title, _ := chat["chatName"].(string)
+				if title == "" {
+					title, _ = chat["title"].(string)
+				}
+				snippet, _ := chat["snippet"].(string)
+				if isTransientConversationPattern(title, snippet) {
+					if err := client.DeleteConversation(convID); err == nil {
+						s.dropConversation(convID)
+						deletedConvIDs[convID] = true
+						anyDeleted = true
+					}
+					continue
+				}
+
 				if !includeActive && active[convID] {
 					continue
 				}
@@ -583,7 +598,7 @@ func (s *Server) handleM365CleanupAll(w http.ResponseWriter, r *http.Request) {
 				candidates = append(candidates, cand{id: convID, createMs: createMs})
 			}
 
-			if len(candidates) == 0 {
+			if len(candidates) == 0 && !anyDeleted {
 				break
 			}
 
@@ -591,7 +606,6 @@ func (s *Server) handleM365CleanupAll(w http.ResponseWriter, r *http.Request) {
 				return candidates[i].createMs > candidates[j].createMs
 			})
 
-			anyDeleted := false
 			for i := keepN; i < len(candidates); i++ {
 				cid := candidates[i].id
 				if err := client.DeleteConversation(cid); err != nil {

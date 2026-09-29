@@ -1175,6 +1175,10 @@ func (s *Server) callbackPKCE(w http.ResponseWriter, r *http.Request) {
 	p.Account = map[string]any{"id": acc.ID, "email": acc.Email, "displayName": acc.DisplayName, "status": acc.Status, "oid": acc.OID, "tid": acc.TID, "memoryDisabled": memoryDisabled, "memoryError": memoryError}
 	s.pkce[state] = p
 	s.mu.Unlock()
+	// Hot-reload the cloud client so conversation management works immediately
+	// after adding the first account at runtime (issue #84); it is otherwise
+	// only initialized at startup.
+	s.InitM365CloudClient()
 	// Browser loopback callbacks should finish in a friendly page instead of
 	// displaying a raw JSON response. Keep JSON for the manual/API flow.
 	if strings.HasPrefix(redirectURI, "http://127.0.0.1:") || strings.HasPrefix(redirectURI, "http://localhost:") {
@@ -1227,6 +1231,12 @@ func (s *Server) resolveAccount(accountID string) (auth.AccountToken, error) {
 			retry := int(time.Until(until).Seconds())
 			if retry < 5 {
 				retry = 5
+			}
+			// A local network failure is not a quota problem: report 503 with a
+			// distinct error code instead of masquerading as 429 rate limiting
+			// (issue #79).
+			if cat, at := s.accountPool.LastCategory(); time.Since(at) < 5*time.Minute && IsTransportCategory(cat) {
+				return auth.AccountToken{}, &UpstreamHTTPError{Status: 503, ErrorCode: "network_error", RetryAfter: retry, Body: "all accounts cooling down after local network errors (last: " + string(cat) + "); check DNS/IPv6/proxy connectivity"}
 			}
 			return auth.AccountToken{}, &UpstreamHTTPError{Status: 429, RetryAfter: retry, Body: "all accounts are cooling down; try again later"}
 		}
@@ -1595,6 +1605,8 @@ func (s *Server) chatOnce(w http.ResponseWriter, r *http.Request) {
 		s.accountPool.UpdateThrottling(acc.ID, res.Throttling)
 		s.logThrottlingWarning(acc.ID, res.Throttling)
 	}
+	// Strip upstream citation control markup from public text (issue #79).
+	res.Text, _ = chathub.StripCitationMarkers(res.Text, res.References)
 	res.Text = sanitizePublicAssistantText(res.Text)
 	res.Reasoning = sanitizePublicReasoningText(res.Reasoning)
 	if body.SessionKey != "" {
@@ -1632,30 +1644,74 @@ func (s *Server) chatOnce(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// dropTransientConversation 异步删除 router/repair/test 轮创建的一次性云端对话，
-// 避免每请求都往 M365 对话列表塞一条记录。删除失败不阻塞请求，留给 auto_cleanup 兜底。
-func (s *Server) dropTransientConversation(accountID, conversationID string) {
-	if conversationID == "" || s.cloudClients == nil {
+// dropTransientConversation 异步延迟删除 router/repair/test 轮创建的一次性云端对话。
+// 微软 WebSocket 结束后存在 1~2 秒异步持久化入库延迟，立即删除容易因未落库被忽略，
+// 因此延迟 2 秒执行；若失败等待 3 秒重试，确保云端残留被彻底清除。
+func (s *Server) dropTransientConversation(accountID string, args ...string) {
+	var token, conversationID string
+	if len(args) == 1 {
+		conversationID = args[0]
+	} else if len(args) >= 2 {
+		token = args[0]
+		conversationID = args[1]
+	}
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
 		return
 	}
-	var client *M365CloudClient
-	var ok bool
-	if strings.TrimSpace(accountID) != "" {
-		client, ok = s.cloudClients.get(strings.TrimSpace(accountID))
-	}
-	if !ok || client == nil {
-		if session, found := s.sessionResolver.GetConversationByID(conversationID); found {
-			client, ok = s.cloudClients.get(session.AccountID)
+	accountID = strings.TrimSpace(accountID)
+	token = strings.TrimSpace(token)
+
+	// 如果没有显式传 token，尝试从账号池获取最新的 token
+	if token == "" && accountID != "" {
+		if acc, ok := s.tokens.Get(accountID); ok && acc.AccessToken != "" {
+			token = acc.AccessToken
 		}
 	}
-	if !ok || client == nil {
-		return
-	}
-	go func(id string, cl *M365CloudClient) {
-		if err := cl.DeleteConversation(id); err != nil {
-			log.Printf("[transient-conv] delete failed id=%s err=%v", id, err)
+
+	go func(accID, accToken, convID string) {
+		time.Sleep(2 * time.Second)
+		var err error
+		if accToken != "" {
+			err = DeleteConversationDirect(nil, accToken, convID)
 		}
-	}(conversationID, client)
+		if err != nil || accToken == "" {
+			var client *M365CloudClient
+			if s.cloudClients != nil {
+				if accID != "" {
+					client, _ = s.cloudClients.get(accID)
+				}
+				if client == nil && s.cloudClients.len() == 1 {
+					for _, c := range s.cloudClients.list() {
+						client = c
+						break
+					}
+				}
+			}
+			if client != nil {
+				err = client.DeleteConversation(convID)
+			}
+		}
+		if err != nil {
+			log.Printf("[transient-conv] first delete attempt failed for id=%s err=%v, retrying in 3s...", convID, err)
+			time.Sleep(3 * time.Second)
+			if accToken != "" {
+				err = DeleteConversationDirect(nil, accToken, convID)
+			}
+			if err != nil && s.cloudClients != nil {
+				if client, ok := s.cloudClients.get(accID); ok {
+					err = client.DeleteConversation(convID)
+				}
+			}
+			if err != nil {
+				log.Printf("[transient-conv] retry delete failed id=%s err=%v", convID, err)
+			} else {
+				log.Printf("[transient-conv] retry successfully deleted conversation id=%s", convID)
+			}
+		} else {
+			log.Printf("[transient-conv] successfully deleted transient conversation id=%s", convID)
+		}
+	}(accountID, token, conversationID)
 }
 
 func (s *Server) adminModelSync(w http.ResponseWriter, r *http.Request) {
@@ -1727,7 +1783,7 @@ func (s *Server) adminModelTest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if res.ConversationID != "" {
-		s.dropTransientConversation(acc.ID, res.ConversationID)
+		s.dropTransientConversation(acc.ID, acc.AccessToken, res.ConversationID)
 	}
 	jsonOut(w, map[string]any{"ok": true, "model": b.Model, "reply": sanitizePublicAssistantTextForModel(res.Text, b.Model), "latency_ms": ms})
 }
@@ -2173,7 +2229,8 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 					}
 					tried[next.ID] = true
 					if res2, err2 := s.chatWithAccount(ctx, next.ID, chathub.Account{AccessToken: next.AccessToken, OID: next.OID, TID: next.TID}, chathub.Request{Text: routePrompt, Tone: tone, Attachments: body.Attachments, LicenseType: toolCfg.LicenseType, Scenario: toolCfg.Scenario}); err2 == nil {
-						s.dropTransientConversation(next.ID, routeRes.ConversationID)
+						s.dropTransientConversation(acc.ID, acc.AccessToken, routeRes.ConversationID)
+						s.dropTransientConversation(next.ID, next.AccessToken, res2.ConversationID)
 						routeRes, routeErr = res2, nil
 						acc = next
 						account = chathub.Account{AccessToken: next.AccessToken, OID: next.OID, TID: next.TID}
@@ -2192,19 +2249,20 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			if routeErr != nil {
+				s.dropTransientConversation(acc.ID, acc.AccessToken, routeRes.ConversationID)
 				writeUpstreamError(w, routeErr)
 				return
 			}
 		}
-		s.dropTransientConversation(acc.ID, routeRes.ConversationID)
+		s.dropTransientConversation(acc.ID, acc.AccessToken, routeRes.ConversationID)
 		if planningMode == "router_slim" {
 			if needNames := parseNeedToolsDecision(routeRes.Text, toolMaps); len(needNames) > 0 {
 				neededTools := filterToolsByName(toolMaps, needNames)
 				if len(neededTools) > 0 {
 					fillPrompt := modelToolParamFillPrompt(prompt+"\n"+activeLedger.RouterContext(), neededTools)
 					fillRes, fillErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: fillPrompt, Tone: tone, Attachments: body.Attachments, LicenseType: toolCfg.LicenseType, Scenario: toolCfg.Scenario})
+					s.dropTransientConversation(acc.ID, acc.AccessToken, fillRes.ConversationID)
 					if fillErr == nil {
-						s.dropTransientConversation(acc.ID, fillRes.ConversationID)
 						routeRes = fillRes
 					}
 				}
@@ -2262,8 +2320,8 @@ CALL_TOOL: tool_name({"arg1":"value1"})
 Decision:`, toolList, writeHint, toolList, toolDefsStr, prompt+"\n"+activeLedger.RouterContext())
 
 			retryRes, retryErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: correctionText, Tone: tone, Attachments: body.Attachments, LicenseType: toolCfg.LicenseType, Scenario: toolCfg.Scenario})
+			s.dropTransientConversation(acc.ID, acc.AccessToken, retryRes.ConversationID)
 			if retryErr == nil {
-				s.dropTransientConversation(acc.ID, retryRes.ConversationID)
 				routeRes = retryRes
 				calls, parsed = parseModelToolDecision(routeRes.Text, toolMaps, body.ToolChoice)
 			}
@@ -2293,8 +2351,8 @@ Decision:`, toolList, writeHint, toolList, toolDefsStr, prompt+"\n"+activeLedger
 			} else {
 				repairRes, repairErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: `Repair this tool routing output into JSON only with shape {"calls":[{"name":"function_name","arguments":{}}]}. Do not invent calls; use {"calls":[]} if unrecoverable. OUTPUT:
 ` + compactToolResult(routeRes.Text, 6000), Tone: tone, Attachments: body.Attachments, LicenseType: toolCfg.LicenseType, Scenario: toolCfg.Scenario})
+				s.dropTransientConversation(acc.ID, acc.AccessToken, repairRes.ConversationID)
 				if repairErr == nil {
-					s.dropTransientConversation(acc.ID, repairRes.ConversationID)
 					calls, parsed = parseModelToolDecision(repairRes.Text, toolMaps, body.ToolChoice)
 				}
 				if !parsed {
@@ -2342,11 +2400,11 @@ Decision:`, routePrompt, internalCall.Name, string(internalCall.Arguments), outp
 				LicenseType: toolCfg.LicenseType,
 				Scenario:    toolCfg.Scenario,
 			})
+			s.dropTransientConversation(acc.ID, acc.AccessToken, nextRes.ConversationID)
 			if nextErr != nil {
 				log.Printf("[gateway-tool] id=%s round=%d error: %v", requestID, round+1, nextErr)
 				break
 			}
-			s.dropTransientConversation(acc.ID, nextRes.ConversationID)
 			routeRes = nextRes
 			calls, parsed = parseModelToolDecision(routeRes.Text, toolMaps, body.ToolChoice)
 			if !parsed {
@@ -2411,8 +2469,8 @@ Decision:`, routePrompt, internalCall.Name, string(internalCall.Arguments), outp
 APPLICATION_REQUEST_AND_EVIDENCE:
 ` + prompt + "\n" + activeLedger.RouterContext() + "\nFUNCTION_DEFINITIONS:\n" + defsStr
 			retryRes, retryErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: retryText, Tone: tone, Attachments: body.Attachments, LicenseType: toolCfg.LicenseType, Scenario: toolCfg.Scenario})
+			s.dropTransientConversation(acc.ID, acc.AccessToken, retryRes.ConversationID)
 			if retryErr == nil {
-				s.dropTransientConversation(acc.ID, retryRes.ConversationID)
 				calls, parsed = parseModelToolDecision(retryRes.Text, toolMaps, body.ToolChoice)
 				calls = filterCompletedCalls(calls, activeLedger)
 				calls, _ = validateCalls("router", calls)
@@ -2475,6 +2533,22 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 		var streamedTools []detectedToolCall
 		first := true
 		identityFilter := newPublicIdentityStreamFilter(model)
+		reasoningFilter := newPublicReasoningStreamFilter()
+		emitReasoning := func(part string) error {
+			if part == "" {
+				return nil
+			}
+			if err := r.Context().Err(); err != nil {
+				return err
+			}
+			delta := map[string]any{"reasoning_content": part}
+			if first {
+				delta["role"] = "assistant"
+				first = false
+			}
+			chunk := map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []any{map[string]any{"index": 0, "delta": delta, "finish_reason": nil}}}
+			return sw.data(mustJSON(chunk))
+		}
 		emitText := func(part string) error {
 			if part == "" {
 				return nil
@@ -2498,6 +2572,9 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 			return nil
 		}
 		res, err := s.chatWithAccountEvents(ctx, acc.ID, account, answerReq, func(ev chathub.StreamEvent) error {
+			if ev.Kind == "reasoning" {
+				return emitReasoning(reasoningFilter.Push(ev.Text))
+			}
 			if ev.Kind == "tool" && ev.ToolName != "" && len(ev.Arguments) > 0 {
 				toolKnown := false
 				for _, tm := range toolMaps {
@@ -2551,6 +2628,9 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 				failoverReq.Text = prompt
 				ctx2 := ctx
 				res2, err2 := s.chatWithAccountEvents(ctx2, next.ID, chathub.Account{AccessToken: next.AccessToken, OID: next.OID, TID: next.TID}, failoverReq, func(ev chathub.StreamEvent) error {
+					if ev.Kind == "reasoning" {
+						return emitReasoning(reasoningFilter.Push(ev.Text))
+					}
 					if ev.Kind == "tool" && ev.ToolName != "" && len(ev.Arguments) > 0 {
 						toolKnown := false
 						for _, tm := range toolMaps {
@@ -2673,6 +2753,10 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 			s.storeConvCache(convCacheNamespace, acc.ID, convCacheModel, res, tone, body.Messages, convReused)
 			return
 		}
+		if err := emitReasoning(reasoningFilter.Flush()); err != nil {
+			log.Printf("[req-trace] id=%s stage=stream_write_reasoning err=%v", requestID, err)
+			return
+		}
 		finishChunk := map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": "stop"}}}
 		if res.Throttling != nil {
 			finishChunk["x_m365_throttling"] = res.Throttling
@@ -2695,6 +2779,10 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 	answerReq := buildAnswerRequest(answerPrompt, tone, body, activeLedger, planningMode, mcpServerURL, s.settings.get(), s.featureFlags(), localeInfo, body.Metadata != nil && body.Metadata.CopilotTempSession)
 	answerPrompt = answerReq.Text
 	var res chathub.Result
+	// NOTE: streaming is fully handled by the earlier `if body.Stream` branch,
+	// which always returns before reaching here, so this duplicate stream
+	// branch is unreachable. Do not add new streaming logic here — the live
+	// path is the one above (issue #83 reasoning streaming was fixed there).
 	if body.Stream {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")

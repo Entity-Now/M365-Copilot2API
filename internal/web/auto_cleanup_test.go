@@ -11,6 +11,29 @@ import (
 	"time"
 )
 
+func TestIsTransientConversationPattern(t *testing.T) {
+	cases := []struct {
+		text string
+		want bool
+	}{
+		{"You are a tool selection assistant. Based on the user request and evidence, decide which tools to call next.", true},
+		{"Available tools: [Read, Write, Edit]", true},
+		{"ROUTER MANDATORY DIRECTIVE:", true},
+		{"CALL_TOOL: write_to_file", true},
+		{"CRITICAL CORRECTION:", true},
+		{"GATEWAY TOOL INSPECTION", true},
+		{"请帮我写一段 Go 语言代码", false},
+		{"如何配置 Nginx 反向代理", false},
+	}
+
+	for _, c := range cases {
+		got := isTransientConversationPattern(c.text)
+		if got != c.want {
+			t.Errorf("isTransientConversationPattern(%q) = %v, want %v", c.text, got, c.want)
+		}
+	}
+}
+
 func newTestServerForAutoCleanup(t *testing.T) *Server {
 	t.Helper()
 	dir := t.TempDir()
