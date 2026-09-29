@@ -111,10 +111,11 @@ func modelToolSlimRouterPrompt(prompt string, tools []map[string]any, choice any
 - STRICT PROHIBITION ON REFUSALS AND CONVERSATIONAL EXCUSES:
   You are an automated tool routing backend, NOT a conversational chatbot.
   NEVER claim you cannot access local files.
-  NEVER claim you lack permissions or that there is a limitation.
+  NEVER claim tools (Read, Write, Edit, Glob, etc.) are unavailable or cannot be called in the current environment.
+  NEVER tell the user to manually update, write, edit, or copy-paste content!
   NEVER tell the user to upload or zip files.
   NEVER output conversational text explaining what you can or cannot do.
-  If files or paths need inspection, you MUST call the tools to inspect them!
+  If files or paths need inspection or writing/updating, you MUST call the tools!
 - Skills inspection: If the prompt contains <skills> and a skill relates to the task, inspect its SKILL.md if needed. DO NOT re-read SKILL.md if it was already read in prior turns or evidence.
 - BATCH MULTI-TOOL CALLING:
   You can plan and call multiple tools in one turn by providing multiple CALL_TOOL lines.
@@ -129,7 +130,10 @@ func modelToolSlimRouterPrompt(prompt string, tools []map[string]any, choice any
 
 	if strings.Contains(prompt, "tool_calls") || strings.Contains(prompt, "[tool ") || strings.Contains(prompt, "tool[") || strings.Contains(prompt, "EVIDENCE_LEDGER") {
 		rules += `
-- Completed evidence must not be repeated: never re-invoke completed calls with identical arguments unless retrying a failure.`
+- Completed evidence must not be repeated: never re-invoke completed calls with identical arguments unless retrying a failure.
+- Follow-through to completion (DO NOT STOP AFTER READING):
+  Reading files (Read/Glob/Grep) is only the preparation step. If the user request or conversation goal involves writing, creating, updating, or modifying files (e.g. progress.md, mistakes.md, topics.md, code files), you MUST now proceed to call the write/edit tool (e.g. Write, Edit, write_to_file, replace_file_content)!
+  DO NOT output NO_TOOL_NEEDED and DO NOT output conversational text telling the user to "manually update" or "directly update" the files.`
 	}
 
 	return fmt.Sprintf(`You are a tool selection assistant. Based on the user request and evidence, decide which tools to call next.
@@ -150,9 +154,9 @@ ROUTER MANDATORY DIRECTIVE:
 Select tools from [%s]. You can call multiple tools in parallel in one turn.
 Direct call: CALL_TOOL: tool_name({"param":"val"})
 Inspect parameter schema: NEED_TOOLS: [tool_a, tool_b]
-No tools needed: NO_TOOL_NEEDED
+No tools needed: NO_TOOL_NEEDED (ONLY for pure conversational greetings with no file access or modifications)
 
-Do NOT chat. Do NOT state limitations. Output tool call immediately if files/paths are involved.
+Do NOT chat. Do NOT state limitations. Output tool call immediately if files/paths are involved (especially write/edit actions).
 
 Decision:`, toolSummary, mode, rules, prompt, toolNames)
 }
@@ -397,10 +401,11 @@ func modelToolRouterPrompt(prompt string, tools []map[string]any, choice any, co
 - ABSOLUTE PROHIBITION ON REFUSALS AND CONVERSATIONAL EXCUSES:
   You are an automated backend tool routing engine, NOT a conversational chatbot.
   NEVER claim you cannot access local files.
-  NEVER claim you lack permissions or that there is a limitation.
+  NEVER claim tools (Read, Write, Edit, Glob, Bash, etc.) are unavailable, not registered, or not executable in this environment!
+  NEVER tell the user to manually update, write, edit, or copy-paste code/files!
   NEVER tell the user to upload or zip files.
   NEVER output conversational text explaining what you can or cannot do.
-  If files or paths need inspection (e.g. C:\..., CLAUDE.md, solution files, docs), you MUST call the tools to inspect them!
+  If files or paths need inspection or writing/updating (e.g. C:\..., CLAUDE.md, solution files, docs, progress.md), you MUST call the tools to inspect or update them!
 - Sufficient context required: Merely listing files (Glob/LS) or reading a single file is NOT sufficient if other essential context files (such as progress trackers, roadmaps, rule definitions, configs, or relevant code files) are needed to accurately fulfill the user's request. You must inspect ALL necessary context files before concluding with NO_TOOL_NEEDED.
 - Skills inspection: If the prompt contains <skills> and a skill relates to the task, inspect its SKILL.md if needed. DO NOT re-read SKILL.md if it was already read in prior turns or evidence.
 - Prefer direct, lightweight inspection tools over heavy multi-turn subagents when exploring files or checking workspace context. Do not delegate simple file reading or project inspection to subagents.
@@ -421,10 +426,10 @@ func modelToolRouterPrompt(prompt string, tools []map[string]any, choice any, co
 	if strings.Contains(prompt, "tool_calls") || strings.Contains(prompt, "[tool ") || strings.Contains(prompt, "tool[") || strings.Contains(prompt, "EVIDENCE_LEDGER") {
 		rules += `
 - Completed evidence must not be repeated: tool_calls rows are prior results already delivered to the user, never re-invoke them with identical arguments unless the user explicitly requests a retry or further modifications
-- Only start a new tool call when fresh unfinished work remains or missing context needs to be gathered:
-  1) Gather sufficient context: If relevant project files, progress logs, roadmaps, or source files have been identified (e.g. via directory listing or file references) but not yet read, you MUST call tools to read them before answering.
-  2) Execute pending actions: If the user requested creating, updating, or modifying files, invoke the appropriate write/edit tools.
-- Only respond with NO_TOOL_NEEDED when all necessary context files have been gathered AND all requested actions/analysis have sufficient information to be accurately delivered.`
+- Follow-through to completion when unfinished work remains (DO NOT STOP AFTER READING):
+  1) Reading files (Read/Glob/Grep) is only the preparation step. If the user request or conversation goal involves writing, creating, updating, or modifying files (e.g. progress.md, mistakes.md, topics.md, code files), you MUST now proceed to call the write/edit tool (e.g. Write, Edit, write_to_file, replace_file_content)!
+  2) STRICTLY FORBIDDEN: Do NOT output conversational text telling the user to "manually update" or "directly update" the files yourself. You must invoke the write/edit tool to do it!
+  3) ONLY respond with NO_TOOL_NEEDED if all requested tasks (including all file creations, edits, and writes) are 100% finished and nothing remains to be executed.`
 	}
 	return fmt.Sprintf(`You are a tool selection assistant. Based on the user request and evidence, decide which tool to call next.
 
@@ -442,11 +447,12 @@ User request and evidence:
 ROUTER MANDATORY DIRECTIVE:
 You are the tool router. The caller runs locally with real client-side tools: [%s].
 Do NOT converse with the user. Do NOT hallucinate a sandbox or /mnt/data. Do NOT ask for ZIP upload.
-If the user wants to evaluate, inspect, read, search, or write project files or workspace paths, CALL THE APPROPRIATE TOOL NOW.
+DO NOT claim tools are unavailable. DO NOT tell the user to manually update or copy-paste!
+If the user wants to evaluate, inspect, read, search, OR WRITE/UPDATE files (e.g. Write, Edit, Bash), CALL THE APPROPRIATE TOOL NOW.
 
 OUTPUT FORMAT:
 CALL_TOOL: tool_name({"arg1":"val1"})
-(or NO_TOOL_NEEDED)
+(Only output NO_TOOL_NEEDED if this is a pure theoretical chat with NO file access or modifications needed)
 
 Decision:`, defs, mode, rules, prompt, toolNames)
 }
@@ -649,8 +655,10 @@ func parseModelToolDecision(text string, tools []map[string]any, choice any) ([]
 }
 
 var (
-	reWinPath  = regexp.MustCompile(`(?i)[a-zA-Z]:\\[a-zA-Z0-9_\-\.\\]+`)
-	reUnixPath = regexp.MustCompile(`/(?:[a-zA-Z0-9_\-\.]+/)+[a-zA-Z0-9_\-\.]*`)
+	reWinPath    = regexp.MustCompile(`(?i)[a-zA-Z]:\\[a-zA-Z0-9_\-\.\\]+`)
+	reUnixPath   = regexp.MustCompile(`/(?:[a-zA-Z0-9_\-\.]+/)+[a-zA-Z0-9_\-\.]*`)
+	reRelPath    = regexp.MustCompile(`(?i)(?:[a-zA-Z0-9_\-\.]+/)+[a-zA-Z0-9_\-\.]+\.[a-zA-Z0-9]+`)
+	reSimpleFile = regexp.MustCompile(`(?i)\b[a-zA-Z0-9_\-]+\.(?:md|json|txt|go|cs|py|ts|js|jsx|tsx|html|css|yml|yaml)\b`)
 )
 
 func extractTargetWorkspacePath(texts ...string) string {
@@ -660,6 +668,14 @@ func extractTargetWorkspacePath(texts ...string) string {
 		}
 		if m := reUnixPath.FindString(text); m != "" {
 			return strings.TrimRight(m, `/`)
+		}
+		if m := reRelPath.FindString(text); m != "" {
+			return strings.TrimSpace(m)
+		}
+	}
+	for _, text := range texts {
+		if m := reSimpleFile.FindString(text); m != "" {
+			return strings.TrimSpace(m)
 		}
 	}
 	return ""
@@ -671,6 +687,11 @@ func trySynthesizeWorkspaceInspection(prompt string, refusalText string, tools [
 		return nil, false
 	}
 
+	combinedLower := strings.ToLower(prompt + " " + refusalText)
+	isWriteTask := strings.Contains(combinedLower, "写入") || strings.Contains(combinedLower, "write") || strings.Contains(combinedLower, "edit") || strings.Contains(combinedLower, "update") || strings.Contains(combinedLower, "修改") || strings.Contains(combinedLower, "编辑") || strings.Contains(combinedLower, "创建")
+
+	writeToolKeywords := []string{"write_to_file", "write_file", "write", "create_file"}
+	editToolKeywords := []string{"replace_file_content", "edit_file", "edit", "replace", "modify"}
 	dirToolKeywords := []string{"list_directory", "list_dir", "glob", "dir", "list", "ls", "search"}
 	fileToolKeywords := []string{"read_file", "view_file", "read", "view", "cat"}
 
@@ -690,8 +711,19 @@ func trySynthesizeWorkspaceInspection(prompt string, refusalText string, tools [
 		return "", nil
 	}
 
-	toolName, fn := findToolByKeywords(dirToolKeywords)
-	isDirTool := true
+	var toolName string
+	var fn map[string]any
+	isDirTool := false
+	if isWriteTask {
+		toolName, fn = findToolByKeywords(writeToolKeywords)
+		if toolName == "" {
+			toolName, fn = findToolByKeywords(editToolKeywords)
+		}
+	}
+	if toolName == "" {
+		toolName, fn = findToolByKeywords(dirToolKeywords)
+		isDirTool = true
+	}
 	if toolName == "" {
 		toolName, fn = findToolByKeywords(fileToolKeywords)
 		isDirTool = false

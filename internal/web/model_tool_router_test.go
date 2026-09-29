@@ -221,6 +221,26 @@ func TestIsToolRefusalRealWorld(t *testing.T) {
 	}
 }
 
+func TestIsToolRefusalConversationToolDenial(t *testing.T) {
+	denialText := `执行命令写入tracking/mistakes.md、tracking/topics.md 和 progress.md
+Read 2026-09-28-production-incident-triage.md
+Read mistakes.md
+Read topics.md
+Read progress.md
+我无法执行你在消息中要求的 Read/Edit/Write、Glob 等工具，因为这些并不是当前对话环境中实际可调用的工具。
+
+不过我已经根据你本次练习内容整理好了应当写入的内容，你可以直接更新：`
+
+	if !isToolRefusal(denialText) {
+		t.Fatalf("expected tool denial text to be identified as tool refusal")
+	}
+
+	calls, parsed := parseModelToolDecision(denialText, testTools(), "auto")
+	if parsed || len(calls) > 0 {
+		t.Fatalf("expected tool denial to return parsed=false, got parsed=%v, calls=%v", parsed, calls)
+	}
+}
+
 func TestExtractTargetWorkspacePath(t *testing.T) {
 	text := `而我当前无法直接读取你本地 C:\Langauge\CSharp\WDM 的完整项目内容`
 	path := extractTargetWorkspacePath(text, "")
@@ -277,7 +297,53 @@ func TestTrySynthesizeWorkspaceInspection(t *testing.T) {
 	}
 	if !strings.Contains(string(calls[0].Arguments), `C:\\Langauge\\CSharp\\WDM`) {
 		t.Fatalf("expected arguments to contain path, got %s", string(calls[0].Arguments))
+	}
 }
+
+func TestTrySynthesizeWorkspaceActionWrite(t *testing.T) {
+	clientTools := []map[string]any{
+		{
+			"type": "function",
+			"function": map[string]any{
+				"name": "write_to_file",
+				"parameters": map[string]any{
+					"type":     "object",
+					"required": []any{"TargetFile", "CodeContent"},
+					"properties": map[string]any{
+						"TargetFile":  map[string]any{"type": "string"},
+						"CodeContent": map[string]any{"type": "string"},
+					},
+				},
+			},
+		},
+		{
+			"type": "function",
+			"function": map[string]any{
+				"name": "read_file",
+				"parameters": map[string]any{
+					"type":     "object",
+					"required": []any{"path"},
+					"properties": map[string]any{
+						"path": map[string]any{"type": "string"},
+					},
+				},
+			},
+		},
+	}
+
+	prompt := `执行命令写入tracking/mistakes.md、tracking/topics.md 和 progress.md`
+	refusal := `我无法执行写入。原因是当前这个对话环境里并没有可用的文件编辑工具。`
+
+	calls, ok := trySynthesizeWorkspaceInspection(prompt, refusal, clientTools, "auto")
+	if !ok || len(calls) != 1 {
+		t.Fatalf("expected synthesized write call, got ok=%v, calls=%v", ok, calls)
+	}
+	if calls[0].Name != "write_to_file" {
+		t.Fatalf("expected write_to_file tool, got %s", calls[0].Name)
+	}
+	if !strings.Contains(string(calls[0].Arguments), "tracking/mistakes.md") && !strings.Contains(string(calls[0].Arguments), "progress.md") {
+		t.Fatalf("expected arguments to contain target file, got %s", string(calls[0].Arguments))
+	}
 }
 
 func TestModelToolRouterPromptOnDemandCatalog(t *testing.T) {

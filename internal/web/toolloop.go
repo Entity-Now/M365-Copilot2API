@@ -230,6 +230,31 @@ var toolRefusalPatterns = []string{
 	"无法访问本地路径",
 	"无法直接在本地",
 	"不能直接操作本地",
+	"并不是当前对话环境",
+	"不是当前对话环境",
+	"实际可调用的工具",
+	"并不是实际可调用",
+	"不是实际可调用",
+	"并不是可调用的工具",
+	"不是可调用的工具",
+	"无法执行你在消息中要求的",
+	"我无法执行你在消息中要求的",
+	"无法执行你要求的",
+	"你可以直接更新",
+	"你可以手动更新",
+	"你可以自行更新",
+	"建议你手动更新",
+	"建议手动更新",
+	"你可以手动修改",
+	"你可以手动写入",
+	"你可以手动创建",
+	"not available in the current conversation",
+	"not available in this environment",
+	"not callable in the current environment",
+	"not actual tools",
+	"cannot execute the requested tools",
+	"cannot invoke tools",
+	"no tools are available in this conversation",
 }
 
 func isToolRefusal(text string) bool {
@@ -260,6 +285,14 @@ func isToolRefusal(text string) bool {
 		"我无法访问你",
 		"无法直接读取你",
 		"无法直接访问你",
+		"实际可调用的工具",
+		"可调用的工具",
+		"无法执行你在消息中要求的",
+		"我无法执行你在消息中要求的",
+		"当前无法调用工具",
+		"无法调用工具",
+		"并非当前可调用",
+		"不是当前环境可调用",
 	}
 	for _, sp := range specialPhrases {
 		if strings.Contains(low, sp) {
@@ -267,9 +300,9 @@ func isToolRefusal(text string) bool {
 		}
 	}
 
-	actionPrefixes := []string{"无法", "不能", "没有权限", "没权限", "当前无法", "暂时无法", "不可直接", "不能直接", "无法直接", "难以直接", "无法自行", "无法主动"}
-	actionVerbs := []string{"读取", "访问", "查看", "扫描", "获取", "操作", "打开", "写入", "修改", "编辑", "执行", "检视", "浏览"}
-	actionTargets := []string{"本地", "文件", "项目", "目录", "代码", "工程", "路径", "内容", "workspace", "磁盘"}
+	actionPrefixes := []string{"并不是", "不是", "并非", "无法", "不能", "没有权限", "没权限", "当前无法", "暂时无法", "不可直接", "不能直接", "无法直接", "难以直接", "无法自行", "无法主动"}
+	actionVerbs := []string{"读取", "访问", "查看", "扫描", "获取", "操作", "打开", "写入", "修改", "编辑", "执行", "检视", "浏览", "调用"}
+	actionTargets := []string{"本地", "文件", "项目", "目录", "代码", "工程", "路径", "内容", "workspace", "磁盘", "工具", "tool", "tools", "函数", "function", "命令", "command"}
 
 	for _, pre := range actionPrefixes {
 		if idx := strings.Index(low, pre); idx >= 0 {
@@ -294,8 +327,8 @@ func isToolRefusal(text string) bool {
 		}
 	}
 
-	enPrefixes := []string{"cannot", "can't", "unable to", "don't have access", "do not have access", "no access"}
-	enTargets := []string{"local", "file", "directory", "project", "workspace", "filesystem", "path"}
+	enPrefixes := []string{"cannot", "can't", "unable to", "don't have access", "do not have access", "no access", "not actual", "not real"}
+	enTargets := []string{"local", "file", "directory", "project", "workspace", "filesystem", "path", "tool", "tools", "command", "function"}
 	for _, pre := range enPrefixes {
 		if idx := strings.Index(low, pre); idx >= 0 {
 			tail := low[idx+len(pre):]

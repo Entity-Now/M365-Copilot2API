@@ -1891,8 +1891,8 @@ func buildAnswerRequest(answerPrompt, tone string, body oaiReq, ledger agentLedg
 	if len(ledger.Completed) > 0 {
 		answerPrompt += "\nFINAL ANSWER RULE: Report only actions supported by completed tool results. If the goal is not fully verified, state exactly what remains unconfirmed."
 	}
-	if isToolRefusal(answerPrompt) || isSandboxHallucination(answerPrompt) || strings.Contains(answerPrompt, `:\`) {
-		answerPrompt += "\nENVIRONMENT NOTICE: You are connected to a local workspace host. Do NOT assume a cloud sandbox, Python container, or /mnt/data. Do NOT ask the user to upload ZIP archives."
+	if isToolRefusal(answerPrompt) || isSandboxHallucination(answerPrompt) || strings.Contains(answerPrompt, `:\`) || strings.Contains(answerPrompt, "tool_calls") {
+		answerPrompt += "\nENVIRONMENT NOTICE: You are connected to a local workspace host. Do NOT assume a cloud sandbox, Python container, or /mnt/data. Do NOT claim tools are unavailable in this environment, and do NOT tell the user to manually update or copy-paste files. Directly answer or summarize the task results."
 	}
 	req := chathub.Request{Text: answerPrompt, Tone: tone, ConversationID: body.ConversationID, SessionID: body.SessionID, Attachments: body.Attachments, LicenseType: cfg.LicenseType, Scenario: cfg.Scenario, FeatureFlags: flags, Locale: locale.Locale, Market: locale.Market, TimeZone: locale.TimeZone, TimeZoneOffset: locale.TimeZoneOffset, DeviceOS: locale.DeviceOS, DisableMemory: disableMemory}
 	// The audited HAR set does not contain a complete client-tool invocation
@@ -2154,7 +2154,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		} else {
 			routePrompt = modelToolRouterPrompt(prompt+"\n"+activeLedger.RouterContext(), toolMaps, body.ToolChoice, useCompact, useOnDemand)
 		}
-		log.Printf("[req-trace] id=%s stage=router_start mode=%s prompt_len=%d tools=%d", requestID, planningMode, len(routePrompt), len(toolMaps))
+		log.Printf("[req-trace] id=%s stage=router_start mode=%s prompt_len=%d tools=%d tool_names=[%s]", requestID, planningMode, len(routePrompt), len(toolMaps), strings.Join(declaredToolNames(toolMaps), ", "))
 		routeRes, routeErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: routePrompt, Tone: tone, Attachments: body.Attachments, LicenseType: toolCfg.LicenseType, Scenario: toolCfg.Scenario})
 		if routeErr != nil {
 			if requestedAccountID == "" && (IsRateLimited(routeErr) || IsAuthFailure(routeErr)) {
@@ -2226,24 +2226,40 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 				b, _ := json.Marshal(toolMaps)
 				toolDefsStr = string(b)
 			}
+			var writeToolCandidates []string
+			for _, t := range toolMaps {
+				if fn, ok := t["function"].(map[string]any); ok {
+					if n, _ := fn["name"].(string); n != "" {
+						ln := strings.ToLower(n)
+						if strings.Contains(ln, "write") || strings.Contains(ln, "edit") || strings.Contains(ln, "replace") || strings.Contains(ln, "modify") || strings.Contains(ln, "bash") || strings.Contains(ln, "cmd") {
+							writeToolCandidates = append(writeToolCandidates, n)
+						}
+					}
+				}
+			}
+			writeHint := ""
+			if len(writeToolCandidates) > 0 {
+				writeHint = fmt.Sprintf("\n- ACTIVE WRITE/EDIT TOOLS: The caller has provided these tools specifically for writing or modifying files: [%s]. You MUST call one of them via CALL_TOOL now if files need to be written or updated!\n", strings.Join(writeToolCandidates, ", "))
+			}
 			correctionText := fmt.Sprintf(`CRITICAL CORRECTION:
-You incorrectly claimed that files cannot be accessed or that /mnt/data is required, or hallucinated a cloud sandbox/container.
-1. You are running as an internal tool router for a local host. There is NO sandbox and NO /mnt/data. Never ask to upload ZIP archives or project files.
-2. The caller's tools execute directly in their local environment with full access to local files, Windows drives (C:\...), and workspace paths.
-3. Real client tools available: [%s]
+You incorrectly claimed that tools cannot be executed, that tools are not available in this environment, that files cannot be accessed, or told the user to manually update or copy-paste files!
+1. You are an automated internal tool router for a local host, NOT a conversational chatbot.
+2. ALL client tools [%s] (e.g. Read, Write, Edit, Glob, Bash) are ACTIVE, FULLY REGISTERED, and execute directly in the caller's local OS with full filesystem access.%s
+3. NEVER tell the user to manually update or copy content! If writing, editing, or creating files was requested, YOU MUST INVOKE the write/edit tool to do it!
+4. Real client tools available: [%s]
 Available tools:
 %s
 
-You MUST call the appropriate client tool now to inspect the workspace or perform the requested action.
-Do not provide explanations or chat text.
+You MUST call the appropriate client tool now to perform the requested action or inspect the workspace.
+Do not provide explanations, chat text, or excuses.
 
-User request:
+User request and evidence:
 %s
 
 OUTPUT FORMAT:
 CALL_TOOL: tool_name({"arg1":"value1"})
 
-Decision:`, toolList, toolDefsStr, prompt+"\n"+activeLedger.RouterContext())
+Decision:`, toolList, writeHint, toolList, toolDefsStr, prompt+"\n"+activeLedger.RouterContext())
 
 			retryRes, retryErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: correctionText, Tone: tone, Attachments: body.Attachments, LicenseType: toolCfg.LicenseType, Scenario: toolCfg.Scenario})
 			if retryErr == nil {
@@ -2251,6 +2267,7 @@ Decision:`, toolList, toolDefsStr, prompt+"\n"+activeLedger.RouterContext())
 				routeRes = retryRes
 				calls, parsed = parseModelToolDecision(routeRes.Text, toolMaps, body.ToolChoice)
 			}
+			log.Printf("[req-trace] id=%s stage=router_refusal_retry parsed=%t calls=%d err=%v text_preview=%q", requestID, parsed, len(calls), retryErr, compactToolResult(routeRes.Text, 80))
 			if len(calls) == 0 {
 				if synthCalls, ok := trySynthesizeWorkspaceInspection(prompt, routeRes.Text, toolMaps, body.ToolChoice); ok && len(synthCalls) > 0 {
 					log.Printf("[router-synth-fallback] id=%s synthesized %d tool calls after refusal retry: %s", requestID, len(synthCalls), synthCalls[0].Name)
@@ -2265,9 +2282,13 @@ Decision:`, toolList, toolDefsStr, prompt+"\n"+activeLedger.RouterContext())
 					log.Printf("[router-synth-fallback] id=%s synthesized %d tool calls for unparsed refusal: %s", requestID, len(synthCalls), synthCalls[0].Name)
 					calls = synthCalls
 					parsed = true
-				} else {
+				} else if fmt.Sprint(body.ToolChoice) == "required" {
 					writeOpenAIError(w, http.StatusBadGateway, "upstream_error", "model refused to call available tools and hallucinated sandbox")
 					return
+				} else {
+					log.Printf("[router-refusal-fallback-text] id=%s model declined tools after retry, gracefully falling back to text response", requestID)
+					parsed = true
+					calls = nil
 				}
 			} else {
 				repairRes, repairErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: `Repair this tool routing output into JSON only with shape {"calls":[{"name":"function_name","arguments":{}}]}. Do not invent calls; use {"calls":[]} if unrecoverable. OUTPUT:
@@ -2354,8 +2375,11 @@ Decision:`, routePrompt, internalCall.Name, string(internalCall.Arguments), outp
 				}
 			}
 			if len(calls) == 0 {
-				writeOpenAIError(w, http.StatusBadGateway, "upstream_error", "model refused to execute tools for workspace task")
-				return
+				if fmt.Sprint(body.ToolChoice) == "required" {
+					writeOpenAIError(w, http.StatusBadGateway, "upstream_error", "model refused to execute tools for workspace task")
+					return
+				}
+				log.Printf("[router-refusal-fallback-text] id=%s no tools synthesized and tool_choice!=required, proceeding to answer text", requestID)
 			}
 		}
 		log.Printf("[req-trace] id=%s stage=router_final_decision calls=%d", requestID, len(calls))
