@@ -67,10 +67,13 @@ var gatewayModels = []modelSpec{
 	{ID: "gpt-5.4-reasoning", Owner: "microsoft-365", Tools: true},
 	{ID: "gpt-5.5", Owner: "microsoft-365", Tools: true},
 	{ID: "gpt-5.5-reasoning", Owner: "microsoft-365", Tools: true},
+	{ID: "gpt-5.6", Owner: "microsoft-365", Tools: true},
 	{ID: "gpt-5.6-reasoning", Owner: "microsoft-365", Tools: true},
+	{ID: "gpt-6-reasoning", Owner: "microsoft-365", Tools: true},
 	{ID: "gpt-image-2", Owner: "microsoft-365", DisplayName: "GPT Image 2", Tools: true},
 	{ID: "claude-sonnet", Owner: "anthropic-via-microsoft-365", Tools: true},
 	{ID: "claude-sonnet-reasoning", Owner: "anthropic-via-microsoft-365", Tools: true},
+	{ID: "claude-opus", Owner: "anthropic-via-microsoft-365", Tools: true},
 }
 
 func validUpstreamTone(tone string) bool {
@@ -88,8 +91,10 @@ func knownUpstreamTones() []string {
 		"Gpt_5_3_Chat", "Gpt_5_3_Reasoning",
 		"Gpt_5_4_Chat", "Gpt_5_4_Reasoning",
 		"Gpt_5_5_Chat", "Gpt_5_5_Reasoning",
-		"Gpt_5_6_Reasoning",
+		"Gpt_5_6_Chat", "Gpt_5_6_Reasoning",
+		"Gpt_6_Reasoning",
 		"Claude_Sonnet", "Claude_Sonnet_Reasoning",
+		"Claude_Opus",
 	}
 }
 
@@ -190,8 +195,12 @@ func supportedChatModel(model string) bool {
 	if isImageModel(model) {
 		return true
 	}
-	switch strings.ToLower(model) {
-	case "gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna":
+	m := strings.ToLower(model)
+	switch m {
+	case "gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6", "gpt-6-reasoning", "claude-opus", "claude-opus-5":
+		return true
+	}
+	if strings.Contains(m, "opus") || strings.HasPrefix(m, "gpt-6") {
 		return true
 	}
 	for _, spec := range gatewayModels {
@@ -279,6 +288,8 @@ func reasoningTone(model, effort string) (string, error) {
 	switch strings.ToLower(strings.TrimSpace(model)) {
 	case "claude", "claude-sonnet":
 		return "Claude_Sonnet_Reasoning", nil
+	case "claude-opus", "claude-opus-5":
+		return "Claude_Opus", nil
 	case "gpt-5.2":
 		return "Gpt_5_2_Reasoning", nil
 	case "gpt-5.3":
@@ -289,7 +300,15 @@ func reasoningTone(model, effort string) (string, error) {
 		return "Gpt_5_5_Reasoning", nil
 	case "gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna":
 		return "Gpt_5_6_Reasoning", nil
+	case "gpt-6", "gpt-6-reasoning", "gpt-6-think-deeper":
+		return "Gpt_6_Reasoning", nil
 	default:
+		if strings.Contains(strings.ToLower(model), "opus") {
+			return "Claude_Opus", nil
+		}
+		if strings.HasPrefix(strings.ToLower(model), "gpt-6") {
+			return "Gpt_6_Reasoning", nil
+		}
 		return "Gpt_5_5_Reasoning", nil
 	}
 }

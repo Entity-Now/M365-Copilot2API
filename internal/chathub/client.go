@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -26,6 +27,8 @@ import (
 // ChatHub sometimes sends through the text channel instead of HTTP 429.
 // Callers must independently probe the account before marking it unhealthy.
 var ErrRateLimitNotice = errors.New("upstream rate-limit notice")
+
+var ErrPriorityAccessExhausted = errors.New("upstream priority access exhausted")
 
 var ErrEmptyCompletion = errors.New("upstream returned empty completion; tone may be unavailable for this tenant")
 
@@ -59,6 +62,93 @@ func checkMeteringError(mi any) error {
 		}
 	}
 	return nil
+}
+
+// IsPaidScenarioTone checks if the requested tone is entitlement-gated under
+// the OfficeWebPaidCopilot scenario (e.g. Claude Opus and GPT-6).
+func IsPaidScenarioTone(tone string) bool {
+	switch strings.ToLower(strings.TrimSpace(tone)) {
+	case "claude_opus", "gpt_6_reasoning":
+		return true
+	default:
+		return false
+	}
+}
+
+var (
+	priorityAccessEnRe = regexp.MustCompile(`(?i)(?:you.?ve|you have)\s+used\s+(?:up\s+)?(?:all\s+of\s+)?your\s+(?:available\s+)?priority\s+access(?:\s+to\s+the\s+([\w.\- ]{1,32}?)\s+model)?\s+for\s+(?:the\s+)?(today|day|week|this\s+week)\b`)
+	priorityAccessZhRe = regexp.MustCompile(`(?:您已用完|已达到)(?:今天|本周|今日)?(?:对\s*[\w.\- ]+\s*模型的)?优先访问权限`)
+)
+
+// ParsePriorityAccessExhaustion detects M365 Copilot's quota refusal when daily
+// or weekly priority access (e.g. for Claude Opus) is exhausted.
+func ParsePriorityAccessExhaustion(text string, now time.Time) (bool, string, int) {
+	if text == "" {
+		return false, "", 0
+	}
+	trimmed := strings.TrimSpace(text)
+	var window string
+	if m := priorityAccessEnRe.FindStringSubmatch(trimmed); len(m) > 2 {
+		w := strings.ToLower(m[2])
+		if strings.Contains(w, "week") {
+			window = "week"
+		} else {
+			window = "day"
+		}
+	} else if priorityAccessZhRe.MatchString(trimmed) {
+		if strings.Contains(trimmed, "本周") {
+			window = "week"
+		} else {
+			window = "day"
+		}
+	}
+	if window == "" {
+		return false, "", 0
+	}
+	var resetAt time.Time
+	if window == "week" {
+		// Next Monday 00:00 UTC
+		daysUntilMonday := (8 - int(now.UTC().Weekday())) % 7
+		if daysUntilMonday == 0 {
+			daysUntilMonday = 7
+		}
+		resetAt = time.Date(now.UTC().Year(), now.UTC().Month(), now.UTC().Day()+daysUntilMonday, 0, 0, 0, 0, time.UTC)
+	} else {
+		// Next midnight UTC
+		resetAt = time.Date(now.UTC().Year(), now.UTC().Month(), now.UTC().Day()+1, 0, 0, 0, 0, time.UTC)
+	}
+	secs := int(resetAt.Sub(now).Seconds())
+	if secs < 1 {
+		secs = 1
+	}
+	return true, window, secs
+}
+
+// CouldBePriorityAccessPrefix checks if streaming text is potentially the prefix
+// of a priority access refusal message, helping hold back the refusal until confirmed.
+func CouldBePriorityAccessPrefix(text string) bool {
+	t := strings.ToLower(strings.TrimSpace(text))
+	t = strings.ReplaceAll(t, "’", "'")
+	t = strings.ReplaceAll(t, "‘", "'")
+	if len(t) == 0 {
+		return true
+	}
+	if len(t) > 45 {
+		return false
+	}
+	for _, p := range []string{
+		"you've used your available priority access",
+		"you have used your available priority access",
+		"you've used up all of your priority access",
+		"you have used up all of your priority access",
+		"您已用完今天对",
+		"您已用完优先访问权限",
+	} {
+		if strings.HasPrefix(p, t) || strings.HasPrefix(t, p) {
+			return true
+		}
+	}
+	return false
 }
 
 var contentPolicyPatterns = []string{
@@ -462,6 +552,14 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 	if req.Tone == "" {
 		req.Tone = defaultTone
 	}
+	if IsPaidScenarioTone(req.Tone) {
+		if req.Scenario == "" || req.Scenario == "OfficeWebIncludedCopilot" {
+			req.Scenario = "OfficeWebPaidCopilot"
+		}
+		if req.LicenseType == "" || req.LicenseType == "Starter" {
+			req.LicenseType = "Premium"
+		}
+	}
 	firstTurn := req.Started
 	if req.SessionID == "" {
 		req.SessionID = uuid.NewString()
@@ -706,6 +804,9 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 		if imageLimitDetected(snapshot) {
 			return ErrImageLimit
 		}
+		if ok, _, _ := ParsePriorityAccessExhaustion(snapshot, time.Now()); ok {
+			return ErrPriorityAccessExhausted
+		}
 		if rateLimited(snapshot) {
 			return ErrRateLimitNotice
 		}
@@ -790,6 +891,7 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 		select {
 		case <-ctx.Done():
 			returnConn = false
+			_ = wsWrite(websocket.TextMessage, []byte(`{"arguments":[{}],"invocationId":"1","target":"stop","type":1}`+rs))
 			_ = conn.Close()
 			if errors.Is(ctx.Err(), context.Canceled) {
 				return Result{}, &DialError{Status: 0, Kind: "CLIENT_CANCELED", cause: ctx.Err()}
@@ -1151,6 +1253,10 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 				if imageLimitDetected(text) {
 					returnConn = false
 					return Result{}, ErrImageLimit
+				}
+				if ok, _, _ := ParsePriorityAccessExhaustion(text, time.Now()); ok {
+					returnConn = false
+					return Result{}, ErrPriorityAccessExhausted
 				}
 				if rateLimited(text) {
 					returnConn = false

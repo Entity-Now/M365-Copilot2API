@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"runtime"
 	"strings"
 )
 
@@ -119,6 +120,12 @@ func modelToolSlimRouterPrompt(prompt string, tools []map[string]any, choice any
 - Skills inspection: If the prompt contains <skills> and a skill relates to the task, inspect its SKILL.md if needed. DO NOT re-read SKILL.md if it was already read in prior turns or evidence.
 - BATCH MULTI-TOOL CALLING:
   You can plan and call multiple tools in one turn by providing multiple CALL_TOOL lines.
+- SHELL-FIRST FRAMING:
+  If a command/shell tool is available, you can perform full multi-file inspections and edits in one turn.
+- ANTI-CONFABULATION MANDATE:
+  You have run nothing yet. NEVER claim that commands return no output, that files are missing, or that you cannot list directories before actually calling the tools! The files named in the task exist on the host filesystem right now.
+- NEVER CLAIM PREMATURE SUCCESS:
+  NEVER claim you have completed the task ("Done", "✅", "I have updated...") unless a real tool response proving it already appears in the evidence above.
 - TWO CHOICES FOR SELECTION:
   1) Direct Call (Preferred): If you know parameters, output CALL_TOOL lines directly:
      CALL_TOOL: tool_name({"param1":"val1"})
@@ -127,6 +134,11 @@ func modelToolSlimRouterPrompt(prompt string, tools []map[string]any, choice any
      NEED_TOOLS: [tool_a, tool_b]
 - ONLY output NO_TOOL_NEEDED if the user prompt is a pure theoretical greeting/chat that has ZERO dependency on any workspace files, code, or local directories.
 - Do NOT answer the question directly. Do NOT output conversational prose, greetings, disclaimers, or explanations.`
+
+	if runtime.GOOS == "windows" || strings.Contains(prompt, ":\\") || strings.Contains(prompt, ":/") {
+		rules += `
+- HOST PLATFORM (Windows): The shell executes in PowerShell or cmd on Windows. Use PowerShell idioms (Get-Content, Set-Content, Get-ChildItem, Select-String) and quote paths with backslashes.`
+	}
 
 	if strings.Contains(prompt, "tool_calls") || strings.Contains(prompt, "[tool ") || strings.Contains(prompt, "tool[") || strings.Contains(prompt, "EVIDENCE_LEDGER") {
 		rules += `

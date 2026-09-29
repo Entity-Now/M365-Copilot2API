@@ -55,7 +55,8 @@ M365 Copilot2API 是一个用 Go 编写的自托管网关，把微软 365 Copilo
 | OpenAI Responses `/v1/responses` | 兼容 Responses 协议（Codex 等客户端） |
 | Anthropic 兼容 `/v1/messages` | Claude Code / Cursor 直连 |
 | SSE 流式输出 | 逐字实时返回，`stream: true` |
-| 工具调用转换 | OpenAI、Responses 与 Anthropic 工具调用经网关结构化路由、Schema 校验和 call ID 关联；未验证的旧插件/native 模式已禁用 |
+| 工具调用与防护 | OpenAI、Responses 与 Anthropic 工具调用经网关结构化路由；支持全 Shell 别名映射、防虚构执行 (<tool_response> 截断)、教程误判抑制与客户端取消时 SignalR stop 信号优雅终止 |
+| 付费模型与配额感知 | 支持 Claude Opus / GPT-6 / GPT-5.6，自动提权 `OfficeWebPaidCopilot` 商业场景，精准感知优先配额耗尽并自动返回 HTTP 429 冷却 |
 | 内容键会话复用 | 以对话上下文为键复用云端对话，命中时只发送增量消息（类似 DeepSeek 上下文缓存） |
 | 会话显式绑定 | `X-M365-Session-Id` 请求头精确指定要继续的会话 |
 | 自动清理 | 按闲置时间（默认 2h）或保留数量回收云端对话 |
@@ -447,17 +448,29 @@ curl http://127.0.0.1:4141/v1/messages \
 
 ## 可用模型
 
-网关默认内置模型映射（可在控制台「设置」页增删与调整默认推理级别）：
+网关默认内置模型映射与高级路由（可在控制台「设置」页增删与调整默认推理级别）：
 
-| 模型 | 默认推理级别 | 说明 |
-|------|-------------|------|
-| `gpt-5.6-sol` | `low` | 默认模型 |
-| `gpt-5.6-terra` | `medium` | 推理折中 |
-| `gpt-5.6-luna` | `medium` | 推理折中 |
+| 模型 | 上游 Tone | 默认推理级别 | 说明 |
+|------|-----------|-------------|------|
+| `claude-opus` | `Claude_Opus` | `medium` | **Anthropic 旗舰**，自动付费场景提权 (`OfficeWebPaidCopilot`)，支持优先配额监控 |
+| `claude-sonnet` | `Claude_Sonnet` | `medium` | Anthropic 主力模型 |
+| `claude-sonnet-reasoning` | `Claude_Sonnet_Reasoning` | `high` | 深度思考版 Sonnet |
+| `gpt-6-reasoning` | `Gpt_6_Reasoning` | `high` | **GPT-6 深度推理**，自动付费场景提权 (`OfficeWebPaidCopilot`) |
+| `gpt-5.6` / `gpt-5.6-sol` | `Gpt_5_6_Chat` | `low` | 速度型默认模型 |
+| `gpt-5.6-reasoning` / `*-terra` | `Gpt_5_6_Reasoning` | `medium` | GPT-5.6 推理模型 |
+| `gpt-5.5` / `gpt-5.5-reasoning` | `Gpt_5_5_Chat` / `Reasoning` | `medium` | GPT-5.5 系列 |
+| `gpt-5.4` / `gpt-5.4-reasoning` | `Gpt_5_4_Chat` / `Reasoning` | `medium` | GPT-5.4 系列 |
+| `gpt-5.2` / `gpt-5.2-reasoning` | `Gpt_5_2_Chat` / `Reasoning` | `medium` | GPT-5.2 系列 |
+| `gpt-image-2` | 专用图像上游 | - | 图像生成/理解通道 |
 
-- 模型映射把公开模型名翻译成上游 tone；控制台可增删映射、调整默认推理级别。
-- 推理强度还可通过请求内的 `reasoning_effort` 参数调整。
-- M365 订阅会上线的新模型名（如 `gpt-5.2`、`gpt-5.4`、`codex` 系）以实际目录为准，可在控制台配置导入。
+- **付费场景自动提权 (Paid Scenario Elevation)**：针对 `Claude_Opus` 与 `Gpt_6_Reasoning`，网关会在握手时自动提升 WebSocket 参数为 `scenario=OfficeWebPaidCopilot` 及 `licenseType=Premium`，突破默认免费订阅下的 BotConnection 拒答。
+- **优先访问配额感知 (Priority Access Quota)**：当 Opus 等高级模型的每日优先访问额度用尽时，微软不会报错而是输出道歉文本；网关能实时捕获此类拒答，自动映射为 HTTP 429 (`code: priority_access_exhausted`) 并附带计算至次日 UTC 0:00 的 `Retry-After` 响应头，以便客户端自动冷却。
+- **高级工具调用与防护机制 (Advanced Tool Calling & Confabulation Guard)**：
+  - **全壳层别名路由**：自动适配 `bash`、`sh`、`pwsh`、`powershell`、`cmd`、`container.run` 等主流 Agent 终端定义。
+  - **防伪造执行防护 (Anti-Confabulation)**：检测到模型自编自演的虚构 `<tool_response>` 标签时自动截断，防止幻觉串扰。
+  - **散文与教程误判防护 (Prose & Markdown Safety)**：有效过滤多步骤教程与包含标题的说明文档，杜绝代码块被误解析为工具执行。
+  - **优雅取消 (SignalR Stop Frame)**：客户端中断或取消请求时，向微软服务端发送 SignalR stop 信号，避免后台孤儿生成继续扣除配额。
+- 推理强度还可通过请求内的 `reasoning_effort` 参数（`none`, `low`, `medium`, `high`, `xhigh`）实时控制。
 
 ## 内容键会话复用原理
 

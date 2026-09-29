@@ -159,9 +159,11 @@ func publicIdentityAnswerForModel(requestedModel, language string) string {
 	}
 	family := "AI"
 	switch {
+	case strings.HasPrefix(strings.ToLower(model), "gpt-6"):
+		family = "GPT-6"
 	case strings.HasPrefix(strings.ToLower(model), "gpt-"):
 		family = "GPT-5"
-	case strings.HasPrefix(strings.ToLower(model), "claude-"):
+	case strings.HasPrefix(strings.ToLower(model), "claude-") || strings.Contains(strings.ToLower(model), "opus"):
 		family = "Claude"
 	}
 	switch language {

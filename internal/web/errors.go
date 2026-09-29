@@ -43,6 +43,9 @@ func upstreamStatus(err error) int {
 	if errors.Is(err, ErrAccountNotBound) {
 		return http.StatusForbidden
 	}
+	if errors.Is(err, chathub.ErrPriorityAccessExhausted) {
+		return http.StatusTooManyRequests
+	}
 	if errors.Is(err, chathub.ErrOffensiveContent) {
 		return http.StatusServiceUnavailable
 	}
@@ -134,6 +137,10 @@ func writeUpstreamErrorWithAccount(w http.ResponseWriter, err error, accountID s
 		}
 		if errors.Is(err, chathub.ErrImageLimit) {
 			writeOpenAIError(w, status, "image_limit_error", "image generation daily limit reached; try again tomorrow")
+			return
+		}
+		if errors.Is(err, chathub.ErrPriorityAccessExhausted) {
+			writeOpenAIError(w, status, "priority_access_exhausted", "priority access allowance for this model has been exhausted; choose another model or wait until the UTC midnight reset")
 			return
 		}
 		msg := "upstream is rate limiting; try again shortly"

@@ -241,6 +241,21 @@ Read progress.md
 	}
 }
 
+func TestIsToolRefusalNoModificationEvidencePassiveAdvice(t *testing.T) {
+	text := `因此这次修复实际上不需要重构架构，只需要在 DynamicDefectRepository.cs 的几个入口增加兼容判断即可。
+
+但目前我没有实际修改仓库文件的证据，因此不能说代码已经完成修改；我只能给出上述基于源码的精确改造方案。`
+
+	if !isToolRefusal(text) {
+		t.Fatalf("expected passive advice without modification evidence to be identified as tool refusal")
+	}
+
+	calls, parsed := parseModelToolDecision(text, testTools(), "auto")
+	if parsed || len(calls) > 0 {
+		t.Fatalf("expected refusal to return parsed=false, got parsed=%v, calls=%v", parsed, calls)
+	}
+}
+
 func TestExtractTargetWorkspacePath(t *testing.T) {
 	text := `而我当前无法直接读取你本地 C:\Langauge\CSharp\WDM 的完整项目内容`
 	path := extractTargetWorkspacePath(text, "")

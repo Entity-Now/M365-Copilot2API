@@ -1435,9 +1435,16 @@ func isImageModel(model string) bool {
 }
 
 func modelTone(model string) string {
-	switch strings.ToLower(strings.TrimSpace(model)) {
+	m := strings.ToLower(strings.TrimSpace(model))
+	switch m {
 	case "gpt-image-2", "image-2", "dall-e-3", "dall-e-2", "designer":
 		return "Magic"
+	case "m365-copilot", "auto":
+		return "magic"
+	case "quick":
+		return "Gpt_5_5_Chat"
+	case "think-deeper":
+		return "Gpt_5_5_Reasoning"
 	case "gpt-5.2":
 		return "Gpt_5_2_Chat"
 	case "gpt-5.2-reasoning":
@@ -1452,17 +1459,32 @@ func modelTone(model string) string {
 		return "Gpt_5_5_Chat"
 	case "gpt-5.5-reasoning":
 		return "Gpt_5_5_Reasoning"
-	case "gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.6-reasoning":
+	case "gpt-5.6", "gpt-5.6-quick":
+		return "Gpt_5_6_Chat"
+	case "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.6-reasoning", "gpt-5.6-think-deeper":
 		return "Gpt_5_6_Reasoning"
-	case "claude", "claude-sonnet":
+	case "gpt-6", "gpt-6-reasoning", "gpt-6-think-deeper":
+		return "Gpt_6_Reasoning"
+	case "claude-opus", "claude-opus-5", "claude-opus-4.5":
+		return "Claude_Opus"
+	case "claude", "claude-sonnet", "claude-sonnet-4.5":
 		return "Claude_Sonnet"
-	case "claude-sonnet-reasoning":
+	case "claude-sonnet-reasoning", "claude-sonnet-think-deeper":
 		return "Claude_Sonnet_Reasoning"
 	case "gpt-5.4-quick":
 		return "Gpt_5_4_Chat"
 	case "gpt-5.3-think-deeper":
-		return "Gpt_5_3_Chat"
+		return "Gpt_5_3_Reasoning"
 	default:
+		if strings.Contains(m, "opus") {
+			return "Claude_Opus"
+		}
+		if strings.HasPrefix(m, "claude") {
+			return "Claude_Sonnet"
+		}
+		if strings.HasPrefix(m, "gpt-6") {
+			return "Gpt_6_Reasoning"
+		}
 		return "magic"
 	}
 }
@@ -2689,19 +2711,21 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 				s.invalidateConvCache(convCacheNamespace, acc.ID, convCacheModel)
 			}
 			msg := upstreamError(err)
+			code := "upstream_error"
 			if IsRateLimited(err) {
 				msg = "upstream is rate limiting; try again shortly"
+				code = "rate_limit_error"
 			}
 			if errors.Is(err, chathub.ErrOffensiveContent) {
 				msg = "M365 content policy flagged this request as offensive"
 			}
-			msg = sanitizePublicInternalText(msg)
-			code := "upstream_error"
-			if IsRateLimited(err) {
-				code = "rate_limit_error"
+			if errors.Is(err, chathub.ErrPriorityAccessExhausted) {
+				msg = "priority access allowance for this model has been exhausted; choose another model or wait until the UTC midnight reset"
+				code = "priority_access_exhausted"
 			} else if ClassifyError(err) == CategoryClientCanceled {
 				code = "client_canceled"
 			}
+			msg = sanitizePublicInternalText(msg)
 			_ = sseRaw(r.Context(), w, flusher, "data: "+mustJSON(map[string]any{"error": map[string]any{"message": msg, "code": code}})+"\n\n")
 			_ = sseRaw(r.Context(), w, flusher, "data: [DONE]\n\n")
 			return
@@ -2716,6 +2740,12 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 			_ = sseRaw(r.Context(), w, flusher, "data: [DONE]\n\n")
 			return
 		}
+		if ok, _, _ := chathub.ParsePriorityAccessExhaustion(res.Text, time.Now()); ok {
+			log.Printf("[priority-access] Opus priority access exhausted (streaming), sending error")
+			_ = sseRaw(r.Context(), w, flusher, "data: "+mustJSON(map[string]any{"error": map[string]any{"message": "priority access allowance for this model has been exhausted; choose another model or wait until the UTC midnight reset", "code": "priority_access_exhausted"}})+"\n\n")
+			_ = sseRaw(r.Context(), w, flusher, "data: [DONE]\n\n")
+			return
+		}
 		if isImageLimitNotice(res.Text) {
 			if s.accountPool != nil {
 				s.accountPool.MarkImageLimited(acc.ID)
@@ -2725,6 +2755,13 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 			text.WriteString(res.Text)
 		}
 		rawCalls := streamedTools
+		if len(rawCalls) == 0 && len(toolMaps) > 0 {
+			if textCalls, ok := extractTextToolCalls(text.String(), toolMaps, body.ToolChoice); ok && len(textCalls) > 0 {
+				rawCalls = textCalls
+			} else if fencedCalls := fencedToolCalls(text.String(), toolMaps, body.ToolChoice); len(fencedCalls) > 0 {
+				rawCalls = fencedCalls
+			}
+		}
 		calls, rejected := validateCalls("stream", rawCalls)
 		toolResult := chathub.Result{Text: text.String()}
 		if len(calls) == 0 && rejected > 0 {
@@ -3186,8 +3223,16 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 		}
 	}
 	invalidDetectedTool := false
-	if rawCalls := nativeToolCalls(res.Events, body.Tools); len(rawCalls) > 0 {
-		calls, rejected := validateCalls("native", rawCalls)
+	rawCalls := nativeToolCalls(res.Events, body.Tools)
+	if len(rawCalls) == 0 && len(toolMaps) > 0 {
+		if textCalls, ok := extractTextToolCalls(res.Text, toolMaps, body.ToolChoice); ok && len(textCalls) > 0 {
+			rawCalls = textCalls
+		} else if fencedCalls := fencedToolCalls(res.Text, toolMaps, body.ToolChoice); len(fencedCalls) > 0 {
+			rawCalls = fencedCalls
+		}
+	}
+	if len(rawCalls) > 0 {
+		calls, rejected := validateCalls("text/native", rawCalls)
 		invalidDetectedTool = invalidDetectedTool || rejected > 0
 		if len(calls) > 0 {
 			calls = limitToolCalls(calls, adaptiveToolCallLimit(calls, configuredToolCallLimit(s.settings)))
@@ -3200,6 +3245,12 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 	}
 	if invalidDetectedTool {
 		writeOpenAIError(w, http.StatusBadGateway, "invalid_tool_call", "upstream returned an invalid structured tool event")
+		return
+	}
+	if ok, _, retrySecs := chathub.ParsePriorityAccessExhaustion(res.Text, time.Now()); ok {
+		log.Printf("[priority-access] Opus priority access exhausted (non-streaming), returning 429")
+		w.Header().Set("Retry-After", strconv.Itoa(retrySecs))
+		writeOpenAIError(w, http.StatusTooManyRequests, "priority_access_exhausted", "priority access allowance for this model has been exhausted; choose another model or wait until the UTC midnight reset")
 		return
 	}
 	if isContentPolicyBlock(res.Text) {

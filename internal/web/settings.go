@@ -206,9 +206,9 @@ func validateSettings(v runtimeSettings) error {
 	if !validLicenses[v.LicenseType] {
 		return fmt.Errorf("licenseType 必须为 Starter、Premium、Free、BCAIS、BCSWW、BCWAF 或 BCWBF")
 	}
-	validScenarios := map[string]bool{"OfficeWebIncludedCopilot": true, "Bizchat": true, "CopilotConsumer": true, "Chathub": true}
+	validScenarios := map[string]bool{"OfficeWebIncludedCopilot": true, "OfficeWebPaidCopilot": true, "Bizchat": true, "CopilotConsumer": true, "Chathub": true}
 	if !validScenarios[v.Scenario] {
-		return fmt.Errorf("scenario 必须为 OfficeWebIncludedCopilot、Bizchat、CopilotConsumer 或 Chathub")
+		return fmt.Errorf("scenario 必须为 OfficeWebIncludedCopilot、OfficeWebPaidCopilot、Bizchat、CopilotConsumer 或 Chathub")
 	}
 	if v.AccountConcurrencyLimit < 1 || v.AccountConcurrencyLimit > 64 {
 		return fmt.Errorf("账号并发上限必须为 1-64")
