@@ -2067,9 +2067,8 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	// Round limits apply only to the current user turn; full history still informs evidence.
 	activeLedger := buildAgentLedger(activeMessages(body.Messages))
 	if err := activeLedger.CanContinue(maxToolRounds()); err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusConflict)
-		_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{"type": "tool_round_limit", "message": err.Error(), "completed_calls": len(activeLedger.Completed)}})
+		log.Printf("[tool-limit] id=%s rejected by agent ledger: %v (completed=%d pending=%d rounds=%d)", requestID, err, len(activeLedger.Completed), len(activeLedger.Pending), activeLedger.ToolRounds)
+		writeOpenAIError(w, http.StatusBadRequest, "tool_round_limit", err.Error())
 		return
 	}
 	// Gateway must not truncate context. All messages are forwarded as-is and
@@ -2414,8 +2413,13 @@ Decision:`, toolList, writeHint, toolList, toolDefsStr, prompt+"\n"+activeLedger
 					calls, parsed = parseModelToolDecision(repairRes.Text, toolMaps, body.ToolChoice)
 				}
 				if !parsed {
-					writeOpenAIError(w, http.StatusBadGateway, "upstream_error", "model returned an invalid tool routing decision")
-					return
+					if fmt.Sprint(body.ToolChoice) == "required" {
+						writeOpenAIError(w, http.StatusBadGateway, "upstream_error", "model returned an invalid tool routing decision")
+						return
+					}
+					log.Printf("[router-fallback-text] id=%s model returned text instead of tools, gracefully falling back to text response", requestID)
+					parsed = true
+					calls = nil
 				}
 			}
 		}

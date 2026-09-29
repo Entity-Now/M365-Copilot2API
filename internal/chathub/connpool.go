@@ -150,7 +150,27 @@ func (p *ConnPool) Take(ctx context.Context, oid, tid string, wsURL string) (*we
 		return picked.conn, &picked.writeMu, picked.frames, picked.errs, true, nil
 	}
 
-	conn, resp, err := p.dialer.DialContext(ctx, wsURL, p.header.Clone())
+	var conn *websocket.Conn
+	var resp *http.Response
+	var err error
+	for attempt := 1; attempt <= 2; attempt++ {
+		conn, resp, err = p.dialer.DialContext(ctx, wsURL, p.header.Clone())
+		if err == nil {
+			break
+		}
+		if resp != nil {
+			break
+		}
+		if attempt < 2 && (strings.Contains(strings.ToLower(err.Error()), "forcibly closed") || strings.Contains(strings.ToLower(err.Error()), "connection reset")) {
+			select {
+			case <-ctx.Done():
+				return nil, nil, nil, nil, false, ctx.Err()
+			case <-time.After(200 * time.Millisecond):
+			}
+			continue
+		}
+		break
+	}
 	if err != nil {
 		if resp != nil {
 			log.Printf("[connpool] dial failed oid=%s status=%d", oid, resp.StatusCode)

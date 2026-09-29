@@ -85,11 +85,13 @@
         return;
     }
 
-    // 2. 自动逐个调用 DeleteConversation 接口删除
+    // 2. 并发删除（5并发）
     let success = 0;
     let fail = 0;
-    for (let i = 0; i < allChats.length; i++) {
-        const c = allChats[i];
+    let completed = 0;
+    const CONCURRENCY = 5;
+
+    async function deleteConversation(c) {
         try {
             const delRes = await fetch(url, {
                 method: "POST",
@@ -107,21 +109,34 @@
                     }
                 })
             });
+
             const delData = await delRes.json();
+            completed++;
+
             if (delData.error) {
-                console.warn(`[${i+1}/${allChats.length}] ❌ 删除失败: ${c.chatName} (${c.conversationId}): ${delData.error}`);
                 fail++;
+                console.warn(`[${completed}/${allChats.length}] ❌ 删除失败: ${c.chatName}`);
             } else {
-                console.log(`[${i+1}/${allChats.length}] ✅ 已删除: ${c.chatName}`);
                 success++;
+                console.log(`[${completed}/${allChats.length}] ✅ 已删除: ${c.chatName}`);
             }
         } catch (e) {
-            console.error(`[${i+1}/${allChats.length}] ❌ 异常: ${e.message}`);
+            completed++;
             fail++;
+            console.error(`[${completed}/${allChats.length}] ❌ 异常: ${e.message}`);
         }
-        // 适当间隔避免触发浏览器端频控
-        await new Promise(r => setTimeout(r, 200));
     }
+
+    let index = 0;
+    const workers = Array.from({ length: Math.min(CONCURRENCY, allChats.length) }, async () => {
+        while (index < allChats.length) {
+            const current = allChats[index++];
+            await deleteConversation(current);
+            await new Promise(r => setTimeout(r, 50));
+        }
+    });
+
+    await Promise.all(workers);
 
     console.log(`\n🏁 全部清理完成！成功删除: ${success} 条，失败: ${fail} 条。刷新页面即可查看清空后的效果。`);
 })();

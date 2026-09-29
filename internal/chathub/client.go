@@ -629,7 +629,30 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 	}
 	if conn == nil {
 		var resp *http.Response
-		conn, resp, err = c.Dialer.DialContext(ctx, wsURL, c.HTTPHeader.Clone())
+		const maxDialAttempts = 2
+		for attempt := 1; attempt <= maxDialAttempts; attempt++ {
+			conn, resp, err = c.Dialer.DialContext(ctx, wsURL, c.HTTPHeader.Clone())
+			if err == nil {
+				break
+			}
+			if resp != nil && (resp.StatusCode == 429 || resp.StatusCode == 401 || resp.StatusCode == 403 || resp.StatusCode == 503) {
+				break
+			}
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				break
+			}
+			kind := classifyTransportError(err)
+			if attempt < maxDialAttempts && (kind == "TCP" || strings.Contains(strings.ToLower(err.Error()), "forcibly closed") || strings.Contains(strings.ToLower(err.Error()), "connection reset")) {
+				log.Printf("chathub ws_dial transient tcp error (%v), retrying in 250ms (attempt %d/%d)...", err, attempt, maxDialAttempts)
+				select {
+				case <-ctx.Done():
+					return Result{}, &DialError{Status: 0, Kind: "CLIENT_CANCELED", cause: ctx.Err()}
+				case <-time.After(250 * time.Millisecond):
+				}
+				continue
+			}
+			break
+		}
 		if err != nil {
 			if resp != nil && (resp.StatusCode == 429 || resp.StatusCode == 401 || resp.StatusCode == 403 || resp.StatusCode == 503) {
 				retryAfter := 0

@@ -31,6 +31,7 @@ const (
 	CategoryWSHandshake        ErrorCategory = "WS_HANDSHAKE"
 	CategoryWSReadTimeout      ErrorCategory = "WS_READ_TIMEOUT"
 	CategoryUpstreamStructured ErrorCategory = "UPSTREAM_STRUCTURED"
+	CategoryUpstreamInternal   ErrorCategory = "UPSTREAM_INTERNAL"
 	CategoryModelEntitlement   ErrorCategory = "MODEL_ENTITLEMENT"
 	CategoryClientCanceled     ErrorCategory = "CLIENT_CANCELED"
 	CategoryGlobalUnavailable  ErrorCategory = "GLOBAL_UNAVAILABLE"
@@ -169,14 +170,16 @@ func ClassifyError(err error) ErrorCategory {
 		return CategoryWSHandshake
 	case strings.Contains(msg, "ws read") || (strings.Contains(msg, "timeout") && strings.Contains(msg, "read")) || strings.Contains(msg, "deadline exceeded"):
 		return CategoryWSReadTimeout
-	case strings.Contains(msg, "connection refused") || strings.Contains(msg, "connection reset") || strings.Contains(msg, "broken pipe") || strings.Contains(msg, "network is unreachable"):
+	case strings.Contains(msg, "connection refused") || strings.Contains(msg, "connection reset") || strings.Contains(msg, "broken pipe") || strings.Contains(msg, "network is unreachable") || strings.Contains(msg, "forcibly closed"):
 		return CategoryTCP
 	case strings.Contains(msg, "client canceled") || strings.Contains(msg, "context canceled"):
 		return CategoryClientCanceled
 	case strings.Contains(msg, "empty completion") || strings.Contains(msg, "offensive") || strings.Contains(msg, "image limit"):
 		return CategoryUpstreamStructured
-	case strings.Contains(msg, "forbiddenrequest"):
+	case strings.Contains(msg, "forbiddenrequest") || strings.Contains(msg, "capability access denied") || strings.Contains(msg, "entitlement"):
 		return CategoryModelEntitlement
+	case strings.Contains(msg, "internalerror") || strings.Contains(msg, "internal error"):
+		return CategoryUpstreamInternal
 	}
 	return CategoryUnknown
 }
@@ -300,7 +303,7 @@ func CooldownForCategory(cat ErrorCategory, retryAfter int, attempt int) time.Du
 	case CategoryAuthExpired401:
 		return 2 * time.Minute
 	case CategoryForbidden403:
-		return 24 * time.Hour
+		return 5 * time.Minute
 	case CategoryUserBanned:
 		return 365 * 24 * time.Hour
 	case CategoryUserThrottled:
@@ -322,9 +325,13 @@ func CooldownForCategory(cat ErrorCategory, retryAfter int, attempt int) time.Du
 	case CategoryWSHandshake:
 		return 15 * time.Second
 	case CategoryWSReadTimeout:
-		return 30 * time.Second
+		return 15 * time.Second
 	case CategoryUpstreamStructured:
 		return 10 * time.Second
+	case CategoryUpstreamInternal:
+		return 0
+	case CategoryModelEntitlement:
+		return 0
 	case CategoryClientCanceled:
 		return 0
 	case CategoryGlobalUnavailable:
@@ -823,6 +830,10 @@ func (h *accountHealth) MarkFailure(accountID string, err error, window time.Dur
 		return
 	case CategoryModelEntitlement:
 		// Model-specific entitlement error (e.g. ForbiddenRequest for Claude Opus on Included license).
+		// The account itself is completely healthy and credentials are valid; do NOT penalize or cool down the account.
+		return
+	case CategoryUpstreamInternal:
+		// Transient upstream prompt refusal or internal glitch (e.g. InternalError: Sorry, I wasn't able to respond to that).
 		// The account itself is completely healthy and credentials are valid; do NOT penalize or cool down the account.
 		return
 	default:

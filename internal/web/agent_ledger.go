@@ -20,6 +20,7 @@ type toolEvidence struct {
 	Name      string `json:"name"`
 	Arguments string `json:"arguments"`
 	Result    string `json:"result"`
+	Returned  bool   `json:"returned"`
 	Failed    bool   `json:"failed"`
 }
 
@@ -93,8 +94,13 @@ func buildAgentLedger(messages []oaiMsg) agentLedger {
 		}
 		if m.Role == "tool" {
 			if e, ok := calls[m.ToolCallID]; ok {
+				e.Returned = true
 				e.Result = compactToolResult(contentToString(m.Content), 4000)
-				e.Failed = failureSignal.MatchString(e.Result)
+				lowName := strings.ToLower(e.Name)
+				isRead := strings.Contains(lowName, "read") || strings.Contains(lowName, "view") || strings.Contains(lowName, "cat") || strings.Contains(lowName, "inspect")
+				if !isRead {
+					e.Failed = failureSignal.MatchString(e.Result)
+				}
 				calls[m.ToolCallID] = e
 			}
 		}
@@ -119,7 +125,7 @@ func buildAgentLedger(messages []oaiMsg) agentLedger {
 		if seenCall[sig] >= 5 {
 			l.StuckLoop = true
 		}
-		if e.Result == "" {
+		if !e.Returned {
 			l.Pending = append(l.Pending, e)
 		} else {
 			l.Completed = append(l.Completed, e)
@@ -253,9 +259,6 @@ func (l agentLedger) CanContinue(maxRounds int) error {
 	}
 	if l.StuckLoop {
 		return fmt.Errorf("stuck tool loop detected: same call repeated 3+ times")
-	}
-	if l.RepeatedFailure {
-		return fmt.Errorf("repeated tool failure detected: %s", l.RepetitionSignature)
 	}
 	if len(l.Pending) > 0 {
 		return fmt.Errorf("pending tool results must be returned before another turn")
