@@ -609,6 +609,7 @@ if (response.output_text) {
           <div><h2 class="page-title">Conversation management</h2><p class="page-sub">View and clean up M365 conversations</p></div>
           <div style="display:flex;gap:8px;align-items:center">
             <button class="btn" id="btnRefreshConv" onclick="refreshConversations()"><i data-lucide="refresh-cw" style="width:14px;height:14px"></i> Refresh</button>
+            <button class="btn" onclick="openCleanScriptModal()"><i data-lucide="terminal" style="width:14px;height:14px"></i> 网页历史清理脚本</button>
             <button class="btn danger" onclick="cleanupAll()">Clean up all</button>
           </div>
         </div>
@@ -765,6 +766,26 @@ if (response.output_text) {
     <div class="uke-tabs" id="useKeyClients"></div>
     <div class="uke-tabs" id="useKeyOs"></div>
     <div id="useKeyFiles"></div>
+  </div>
+</div>
+
+<!-- Clean Script Modal -->
+<div class="modal-overlay" id="cleanScriptModal">
+  <div class="modal" style="max-width:700px">
+    <div class="modal-head">
+      <div>
+        <h3>M365 网页端历史对话批量清理脚本</h3>
+      </div>
+      <button type="button" class="modal-close" onclick="closeCleanScriptModal()"><i data-lucide="x" style="width:15px;height:15px"></i></button>
+    </div>
+    <p class="subtitle">在已登录 M365 Copilot 的浏览器网页（如 Edge 侧边栏或 m365.cloud.microsoft）中按 <b>F12</b> 打开控制台（Console），粘贴下方脚本回车执行，即可利用浏览器的完整 Cookie 权限自动分页扫描并一键批量清空所有堆积的历史对话记录。</p>
+    <div style="margin:12px 0">
+      <textarea id="cleanScriptText" class="form-input" style="height:240px;font-family:monospace;font-size:12px;white-space:pre" readonly></textarea>
+    </div>
+    <div style="display:flex;justify-content:flex-end;gap:8px">
+      <button class="btn" onclick="closeCleanScriptModal()">关闭</button>
+      <button class="btn primary" onclick="copyCleanScript()"><i data-lucide="copy" style="width:14px;height:14px"></i> 复制脚本内容</button>
+    </div>
   </div>
 </div>
 
@@ -2223,6 +2244,130 @@ async function cleanupAll(){
     termLine('Finished: '+ok+' succeeded, '+fail+' failed, '+round+' rounds total.',fail?'warn':'ok');
     showNotice('清理完成','success');loadConversations();
   }
+}
+
+const M365_CLEAN_SCRIPT = `(async function() {
+    console.log("🚀 开始获取 M365 对话列表...");
+    const url = "https://m365.cloud.microsoft/resources/app-shell-action?FORM=undexpand&fromcode=edgesidebar&auth=2";
+    
+    let allChats = [];
+    let syncState = null;
+    let page = 1;
+
+    while (true) {
+        console.log(\`正在拉取第 \${page} 页对话列表...\`);
+        const body = {
+            action: "GetConversationPageHistoryList",
+            enableLastMessage: true,
+            conversationHistoryFilter: null,
+            state: {
+                conversationPageHistoryList: { chats: [] }
+            }
+        };
+        if (syncState) {
+            body.syncState = syncState;
+        }
+
+        const res = await fetch(url, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "Accept": "application/json, text/plain, */*",
+                "X-Requested-With": "XMLHttpRequest"
+            },
+            body: JSON.stringify(body)
+        });
+
+        if (!res.ok) {
+            console.error(\`拉取第 \${page} 页失败: HTTP \${res.status}\`);
+            break;
+        }
+
+        const data = await res.json();
+        const hist = data?.store?.conversationPageHistoryList || data?.state?.conversationPageHistoryList;
+        const chats = hist?.chats || [];
+        if (chats.length === 0) {
+            break;
+        }
+
+        allChats.push(...chats);
+        console.log(\`第 \${page} 页获取到 \${chats.length} 条对话，累计找到: \${allChats.length} 条\`);
+
+        const nextSync = hist?.syncState;
+        if (!nextSync || nextSync === syncState) {
+            break;
+        }
+        syncState = nextSync;
+        page++;
+        await new Promise(r => setTimeout(r, 400));
+    }
+
+    console.log(\`🎉 扫描完成，共找到 \${allChats.length} 个历史对话！\`);
+    if (allChats.length === 0) {
+        alert("当前没有任何历史对话记录。");
+        return;
+    }
+
+    console.table(allChats.map(c => ({
+        ID: c.conversationId,
+        标题: c.chatName,
+        模型: c.tone,
+        创建时间: new Date(c.createTimeUtc).toLocaleString()
+    })));
+
+    if (!confirm(\`共扫描到 \${allChats.length} 个历史对话记录，确定要全部删除吗？\`)) {
+        console.log("用户取消操作。");
+        return;
+    }
+
+    let success = 0;
+    let fail = 0;
+    for (let i = 0; i < allChats.length; i++) {
+        const c = allChats[i];
+        try {
+            const delRes = await fetch(url, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    "Accept": "application/json, text/plain, */*",
+                    "X-Requested-With": "XMLHttpRequest"
+                },
+                body: JSON.stringify({
+                    action: "DeleteConversation",
+                    conversationId: c.conversationId,
+                    state: {
+                        conversationPageHistoryList: { chats: [] },
+                        taskConversationPageHistoryList: { chats: [] }
+                    }
+                })
+            });
+            const delData = await delRes.json();
+            if (delData.error) {
+                console.warn(\`[\${i+1}/\${allChats.length}] ❌ 删除失败: \${c.chatName}: \${delData.error}\`);
+                fail++;
+            } else {
+                console.log(\`[\${i+1}/\${allChats.length}] ✅ 已删除: \${c.chatName}\`);
+                success++;
+            }
+        } catch (e) {
+            console.error(\`[\${i+1}/\${allChats.length}] ❌ 异常: \${e.message}\`);
+            fail++;
+        }
+        await new Promise(r => setTimeout(r, 200));
+    }
+
+    alert(\`全部清理完成！成功删除: \${success} 条，失败: \${fail} 条。刷新页面即可查看清空后的效果。\`);
+})();`;
+
+function openCleanScriptModal(){
+  $('cleanScriptText').value = M365_CLEAN_SCRIPT;
+  $('cleanScriptModal').classList.add('open');
+}
+function closeCleanScriptModal(){
+  $('cleanScriptModal').classList.remove('open');
+}
+async function copyCleanScript(){
+  await safeCopy($('cleanScriptText').value);
 }
 
 function proxyRow(x){

@@ -1812,8 +1812,9 @@ func (s *Server) adminModelTest(w http.ResponseWriter, r *http.Request) {
 		Text:         `Say "OK" in one word.`,
 		Tone:         tone,
 		LicenseType:  licenseType,
-		Scenario:     scenario,
-		FeatureFlags: s.featureFlags(),
+		Scenario:      scenario,
+		FeatureFlags:  s.featureFlags(),
+		DisableMemory: true,
 	})
 	ms := time.Since(start).Milliseconds()
 	if err != nil {
@@ -1989,6 +1990,13 @@ func normalizeLegacyTools(body *oaiReq) {
 	if body.ToolChoice == nil && body.FunctionCall != nil {
 		body.ToolChoice = body.FunctionCall
 	}
+}
+
+func shouldDisableMemory(body oaiReq) bool {
+	if os.Getenv("M365_SAVE_HISTORY") == "1" {
+		return false
+	}
+	return true
 }
 
 func buildAnswerRequest(answerPrompt, tone string, body oaiReq, ledger agentLedger, planningMode string, mcpServerURL string, cfg runtimeSettings, flags chathub.FeatureFlags, locale chathubLocale, disableMemory bool) chathub.Request {
@@ -2261,7 +2269,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		} else {
 			routePrompt = modelToolRouterPrompt(prompt+"\n"+activeLedger.RouterContext(), toolMaps, body.ToolChoice, useCompact, useOnDemand)
 		}
-		routeRes, routeErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: routePrompt, Tone: tone, Attachments: body.Attachments, LicenseType: toolCfg.LicenseType, Scenario: toolCfg.Scenario})
+		routeRes, routeErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: routePrompt, Tone: tone, Attachments: body.Attachments, LicenseType: toolCfg.LicenseType, Scenario: toolCfg.Scenario, DisableMemory: true})
 		if routeErr != nil {
 			if requestedAccountID == "" && (IsRateLimited(routeErr) || IsAuthFailure(routeErr)) {
 				if s.accountPool != nil {
@@ -2278,7 +2286,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 						break
 					}
 					tried[next.ID] = true
-					if res2, err2 := s.chatWithAccount(ctx, next.ID, chathub.Account{AccessToken: next.AccessToken, OID: next.OID, TID: next.TID}, chathub.Request{Text: routePrompt, Tone: tone, Attachments: body.Attachments, LicenseType: toolCfg.LicenseType, Scenario: toolCfg.Scenario}); err2 == nil {
+					if res2, err2 := s.chatWithAccount(ctx, next.ID, chathub.Account{AccessToken: next.AccessToken, OID: next.OID, TID: next.TID}, chathub.Request{Text: routePrompt, Tone: tone, Attachments: body.Attachments, LicenseType: toolCfg.LicenseType, Scenario: toolCfg.Scenario, DisableMemory: true}); err2 == nil {
 						s.dropTransientConversation(acc.ID, acc.AccessToken, routeRes.ConversationID)
 						s.dropTransientConversation(next.ID, next.AccessToken, res2.ConversationID)
 						routeRes, routeErr = res2, nil
@@ -2310,7 +2318,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 				neededTools := filterToolsByName(toolMaps, needNames)
 				if len(neededTools) > 0 {
 					fillPrompt := modelToolParamFillPrompt(prompt+"\n"+activeLedger.RouterContext(), neededTools)
-					fillRes, fillErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: fillPrompt, Tone: tone, Attachments: body.Attachments, LicenseType: toolCfg.LicenseType, Scenario: toolCfg.Scenario})
+					fillRes, fillErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: fillPrompt, Tone: tone, Attachments: body.Attachments, LicenseType: toolCfg.LicenseType, Scenario: toolCfg.Scenario, DisableMemory: true})
 					s.dropTransientConversation(acc.ID, acc.AccessToken, fillRes.ConversationID)
 					if fillErr == nil {
 						routeRes = fillRes
@@ -2369,7 +2377,7 @@ CALL_TOOL: tool_name({"arg1":"value1"})
 
 Decision:`, toolList, writeHint, toolList, toolDefsStr, prompt+"\n"+activeLedger.RouterContext())
 
-			retryRes, retryErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: correctionText, Tone: tone, Attachments: body.Attachments, LicenseType: toolCfg.LicenseType, Scenario: toolCfg.Scenario})
+			retryRes, retryErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: correctionText, Tone: tone, Attachments: body.Attachments, LicenseType: toolCfg.LicenseType, Scenario: toolCfg.Scenario, DisableMemory: true})
 			s.dropTransientConversation(acc.ID, acc.AccessToken, retryRes.ConversationID)
 			if retryErr == nil {
 				routeRes = retryRes
@@ -2400,7 +2408,7 @@ Decision:`, toolList, writeHint, toolList, toolDefsStr, prompt+"\n"+activeLedger
 				}
 			} else {
 				repairRes, repairErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: `Repair this tool routing output into JSON only with shape {"calls":[{"name":"function_name","arguments":{}}]}. Do not invent calls; use {"calls":[]} if unrecoverable. OUTPUT:
-` + compactToolResult(routeRes.Text, 6000), Tone: tone, Attachments: body.Attachments, LicenseType: toolCfg.LicenseType, Scenario: toolCfg.Scenario})
+` + compactToolResult(routeRes.Text, 6000), Tone: tone, Attachments: body.Attachments, LicenseType: toolCfg.LicenseType, Scenario: toolCfg.Scenario, DisableMemory: true})
 				s.dropTransientConversation(acc.ID, acc.AccessToken, repairRes.ConversationID)
 				if repairErr == nil {
 					calls, parsed = parseModelToolDecision(repairRes.Text, toolMaps, body.ToolChoice)
@@ -2444,11 +2452,12 @@ CALL_TOOL: tool_name({"arg1":"value1"})
 Decision:`, routePrompt, internalCall.Name, string(internalCall.Arguments), output)
 
 			nextRes, nextErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{
-				Text:        inspectionPrompt,
-				Tone:        tone,
-				Attachments: body.Attachments,
-				LicenseType: toolCfg.LicenseType,
-				Scenario:    toolCfg.Scenario,
+				Text:          inspectionPrompt,
+				Tone:          tone,
+				Attachments:   body.Attachments,
+				LicenseType:   toolCfg.LicenseType,
+				Scenario:      toolCfg.Scenario,
+				DisableMemory: true,
 			})
 			s.dropTransientConversation(acc.ID, acc.AccessToken, nextRes.ConversationID)
 			if nextErr != nil {
@@ -2518,7 +2527,7 @@ Decision:`, routePrompt, internalCall.Name, string(internalCall.Arguments), outp
 			retryText := `Select at least one required next tool call from FUNCTION_DEFINITIONS. Validate every argument against its schema. Return JSON only as {"calls":[{"name":"function_name","arguments":{}}]}.
 APPLICATION_REQUEST_AND_EVIDENCE:
 ` + prompt + "\n" + activeLedger.RouterContext() + "\nFUNCTION_DEFINITIONS:\n" + defsStr
-			retryRes, retryErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: retryText, Tone: tone, Attachments: body.Attachments, LicenseType: toolCfg.LicenseType, Scenario: toolCfg.Scenario})
+			retryRes, retryErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: retryText, Tone: tone, Attachments: body.Attachments, LicenseType: toolCfg.LicenseType, Scenario: toolCfg.Scenario, DisableMemory: true})
 			s.dropTransientConversation(acc.ID, acc.AccessToken, retryRes.ConversationID)
 			if retryErr == nil {
 				calls, parsed = parseModelToolDecision(retryRes.Text, toolMaps, body.ToolChoice)
@@ -2543,7 +2552,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 		}
 	}
 	if body.Stream {
-		answerReq := buildAnswerRequest(answerPrompt, tone, body, activeLedger, planningMode, mcpServerURL, s.settings.get(), s.featureFlags(), localeInfo, body.Metadata != nil && body.Metadata.CopilotTempSession)
+		answerReq := buildAnswerRequest(answerPrompt, tone, body, activeLedger, planningMode, mcpServerURL, s.settings.get(), s.featureFlags(), localeInfo, shouldDisableMemory(body))
 		answerPrompt = answerReq.Text
 		log.Printf("[req-trace] id=%s stage=answer_start prompt_len=%d native_tools=%d mcp=%s", requestID, len(answerPrompt), len(answerReq.Tools), mcpServerURL)
 		id := "chatcmpl-" + uuid.NewString()
@@ -2841,7 +2850,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 		s.storeConvCache(convCacheNamespace, acc.ID, convCacheModel, res, tone, body.Messages, convReused)
 		return
 	}
-	answerReq := buildAnswerRequest(answerPrompt, tone, body, activeLedger, planningMode, mcpServerURL, s.settings.get(), s.featureFlags(), localeInfo, body.Metadata != nil && body.Metadata.CopilotTempSession)
+	answerReq := buildAnswerRequest(answerPrompt, tone, body, activeLedger, planningMode, mcpServerURL, s.settings.get(), s.featureFlags(), localeInfo, shouldDisableMemory(body))
 	answerPrompt = answerReq.Text
 	var res chathub.Result
 	// NOTE: streaming is fully handled by the earlier `if body.Stream` branch,
