@@ -2254,9 +2254,13 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	// The stream is opened by the actual response path below. Do not emit a
 	// tool preamble here: a request may contain tools in its schema while still
 	// being an ordinary text question.
-	// Ask the upstream model to select and validate the next tool. The gateway
-	// remains tool-agnostic; it only validates and serializes the decision.
-	if (planningMode == "router" || planningMode == "router_slim") && len(toolMaps) > 0 && fmt.Sprint(body.ToolChoice) != "none" {
+	isDirectMode := planningMode == ToolPlanningModeDirect || (planningMode != ToolPlanningModeRouter && planningMode != ToolPlanningModeRouterSlim)
+	if isDirectMode && len(toolMaps) > 100 {
+		log.Printf("[direct-tools] id=%s tool count (%d) exceeds direct threshold (100), falling back to router_slim", requestID, len(toolMaps))
+		planningMode = ToolPlanningModeRouterSlim
+		isDirectMode = false
+	}
+	if !isDirectMode && (planningMode == "router" || planningMode == "router_slim") && len(toolMaps) > 0 && fmt.Sprint(body.ToolChoice) != "none" {
 		useCompact := s.settings.get().EnableCompactToolRouter
 		useOnDemand := s.settings.get().EnableOnDemandToolSchema
 		if (useCompact || useOnDemand || planningMode == "router_slim") && isTrivialGreeting(prompt) && len(activeLedger.Completed) == 0 && fmt.Sprint(body.ToolChoice) != "required" {
@@ -2555,6 +2559,10 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 		}
 		}
 	}
+	if isDirectMode && len(toolMaps) > 0 && fmt.Sprint(body.ToolChoice) != "none" {
+		answerPrompt = formatDirectToolPrompt(answerPrompt, toolMaps, body.ToolChoice)
+		log.Printf("[req-trace] id=%s stage=direct_tool_injection tools=%d prompt_len=%d", requestID, len(toolMaps), len(answerPrompt))
+	}
 	if body.Stream {
 		answerReq := buildAnswerRequest(answerPrompt, tone, body, activeLedger, planningMode, mcpServerURL, s.settings.get(), s.featureFlags(), localeInfo, shouldDisableMemory(body))
 		answerPrompt = answerReq.Text
@@ -2592,7 +2600,6 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 			}
 		}()
 		var text strings.Builder
-		var pending strings.Builder
 		var streamedTools []detectedToolCall
 		first := true
 		identityFilter := newPublicIdentityStreamFilter(model)
@@ -2634,6 +2641,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 			}
 			return nil
 		}
+		toolStream := newToolStreamState(toolMaps)
 		res, err := s.chatWithAccountEvents(ctx, acc.ID, account, answerReq, func(ev chathub.StreamEvent) error {
 			if ev.Kind == "reasoning" {
 				return emitReasoning(reasoningFilter.Push(ev.Text))
@@ -2658,7 +2666,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 			if ev.Kind != "text" || ev.Text == "" {
 				return nil
 			}
-			return streamEmitText(ev, &text, &pending, emitText)
+			return toolStream.processStreamChunk(ev, &text, emitText)
 		})
 		if err != nil && text.Len() == 0 && len(streamedTools) == 0 && requestedAccountID == "" && (IsRateLimited(err) || IsAuthFailure(err)) {
 			originalErr := err
@@ -2712,7 +2720,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 					if ev.Kind != "text" || ev.Text == "" {
 						return nil
 					}
-					return streamEmitText(ev, &text, &pending, emitText)
+					return toolStream.processStreamChunk(ev, &text, emitText)
 				})
 				if err2 == nil {
 					res = res2
@@ -2796,6 +2804,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 			text.WriteString(res.Text)
 		}
 		rawCalls := streamedTools
+		isNative := len(rawCalls) > 0
 		if len(rawCalls) == 0 && len(toolMaps) > 0 {
 			if textCalls, ok := extractTextToolCalls(text.String(), toolMaps, body.ToolChoice); ok && len(textCalls) > 0 {
 				rawCalls = textCalls
@@ -2805,11 +2814,17 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 		}
 		calls, rejected := validateCalls("stream", rawCalls)
 		toolResult := chathub.Result{Text: text.String()}
-		if len(calls) == 0 && rejected > 0 {
-			log.Printf("[tool-validation] id=%s stage=stream rejected structured tool event", requestID)
-			_ = sseRaw(r.Context(), w, flusher, "data: "+mustJSON(map[string]any{"error": map[string]any{"message": "upstream returned an invalid structured tool event", "code": "invalid_tool_call"}})+"\n\n")
-			_ = sseRaw(r.Context(), w, flusher, "data: [DONE]\n\n")
-			return
+		if len(calls) == 0 {
+			_ = toolStream.flushRemaining(&text, emitText)
+			if rejected > 0 {
+				if isNative || fmt.Sprint(body.ToolChoice) == "required" {
+					log.Printf("[tool-validation] id=%s stage=stream rejected structured tool event", requestID)
+					_ = sseRaw(r.Context(), w, flusher, "data: "+mustJSON(map[string]any{"error": map[string]any{"message": "upstream returned an invalid structured tool event", "code": "invalid_tool_call"}})+"\n\n")
+					_ = sseRaw(r.Context(), w, flusher, "data: [DONE]\n\n")
+					return
+				}
+				log.Printf("[tool-validation] id=%s stage=stream heuristic tool calls rejected (%d), falling back to text response", requestID, rejected)
+			}
 		}
 		if len(calls) > 0 {
 			log.Printf("[req-trace] id=%s stage=tool_calls_detected count=%d names=%v", requestID, len(calls), func() []string {
@@ -3265,6 +3280,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 	}
 	invalidDetectedTool := false
 	rawCalls := nativeToolCalls(res.Events, body.Tools)
+	isNative := len(rawCalls) > 0
 	if len(rawCalls) == 0 && len(toolMaps) > 0 {
 		if textCalls, ok := extractTextToolCalls(res.Text, toolMaps, body.ToolChoice); ok && len(textCalls) > 0 {
 			rawCalls = textCalls
@@ -3280,13 +3296,17 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 			if body.ParallelToolCalls != nil && !*body.ParallelToolCalls && len(calls) > 1 {
 				calls = calls[:1]
 			}
+			res.Text = removeTextToolContent(res.Text)
 			_ = writeToolResponse(w, id, model, body.Stream, body.shouldSendStreamUsage(), calls, res)
 			return
 		}
 	}
 	if invalidDetectedTool {
-		writeOpenAIError(w, http.StatusBadGateway, "invalid_tool_call", "upstream returned an invalid structured tool event")
-		return
+		if isNative || fmt.Sprint(body.ToolChoice) == "required" {
+			writeOpenAIError(w, http.StatusBadGateway, "invalid_tool_call", "upstream returned an invalid structured tool event")
+			return
+		}
+		log.Printf("[tool-validation] id=%s stage=text/native heuristic tool calls rejected, falling back to text response", requestID)
 	}
 	if ok, _, retrySecs := chathub.ParsePriorityAccessExhaustion(res.Text, time.Now()); ok {
 		log.Printf("[priority-access] Opus priority access exhausted (non-streaming), returning 429")

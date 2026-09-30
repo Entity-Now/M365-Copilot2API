@@ -6,21 +6,28 @@ import (
 )
 
 const (
+	ToolPlanningModeDirect     = "direct"
 	ToolPlanningModeRouter     = "router"
 	ToolPlanningModeRouterSlim = "router_slim"
 )
 
 func toolPlanningMode(raw string) string {
 	raw = strings.ToLower(strings.TrimSpace(raw))
-	if raw == ToolPlanningModeRouterSlim {
+	switch raw {
+	case ToolPlanningModeRouter:
+		return ToolPlanningModeRouter
+	case ToolPlanningModeRouterSlim:
 		return ToolPlanningModeRouterSlim
+	case ToolPlanningModeDirect, "native":
+		return ToolPlanningModeDirect
+	default:
+		return ToolPlanningModeDirect
 	}
-	return ToolPlanningModeRouter
 }
 
 func isValidToolPlanningMode(mode string) bool {
 	mode = strings.ToLower(strings.TrimSpace(mode))
-	return mode == "" || mode == ToolPlanningModeRouter || mode == ToolPlanningModeRouterSlim
+	return mode == "" || mode == ToolPlanningModeDirect || mode == "native" || mode == ToolPlanningModeRouter || mode == ToolPlanningModeRouterSlim
 }
 
 var reGreetingTags = regexp.MustCompile(`(?s)<[^>]+>.*?</[^>]+>|<[^>]+>`)

@@ -3,6 +3,7 @@ package web
 import (
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"strings"
@@ -120,6 +121,12 @@ func modelToolSlimRouterPrompt(prompt string, tools []map[string]any, choice any
 - Skills inspection: If the prompt contains <skills> and a skill relates to the task, inspect its SKILL.md if needed. DO NOT re-read SKILL.md if it was already read in prior turns or evidence.
 - BATCH MULTI-TOOL CALLING:
   You can plan and call multiple tools in one turn by providing multiple CALL_TOOL lines.
+- AUTONOMOUS INVESTIGATION DEPTH & SCOPE CALIBRATION:
+  Assess the scope and blast radius of the task before selecting tools or concluding:
+  1) Level 1 (Local / Self-Contained Scope): Single-file typos, local private helpers, UI text, isolated tweaks, or direct code explanation. Focus on the target file; DO NOT waste tokens performing broad global grep across unrelated directories.
+  2) Level 2 (Contract / Dependency Scope): Altering public method signatures, interface contracts, shared models, or renaming. Perform targeted Grep on the symbol to locate direct callers and verify regressions.
+  3) Level 3 (Systemic Bug / Complex Cross-Cutting / Unknown Root Cause): Multi-service flow failures, database/ORM mapping, concurrency, state inconsistency, or complex bugs spanning multiple layers. DO NOT be lazy or myopic! Never stop after merely reading the 1-2 files directly mentioned. Proactively trace referenced services, interfaces, repository implementations, entity definitions, and configs using Grep/Read before concluding.
+  4) NEVER conclude with NO_TOOL_NEEDED if essential context files, referenced interfaces, or unlocated callers remain uninspected.
 - SHELL-FIRST FRAMING:
   If a command/shell tool is available, you can perform full multi-file inspections and edits in one turn.
 - ANTI-CONFABULATION MANDATE:
@@ -418,7 +425,12 @@ func modelToolRouterPrompt(prompt string, tools []map[string]any, choice any, co
   NEVER tell the user to upload or zip files.
   NEVER output conversational text explaining what you can or cannot do.
   If files or paths need inspection or writing/updating (e.g. C:\..., CLAUDE.md, solution files, docs, progress.md), you MUST call the tools to inspect or update them!
-- Sufficient context required: Merely listing files (Glob/LS) or reading a single file is NOT sufficient if other essential context files (such as progress trackers, roadmaps, rule definitions, configs, or relevant code files) are needed to accurately fulfill the user's request. You must inspect ALL necessary context files before concluding with NO_TOOL_NEEDED.
+- Sufficient context required & Autonomous investigation depth calibration:
+  Assess the scope and blast radius of the task before selecting tools or concluding:
+  1) Level 1 (Local / Self-Contained Scope): For single-file typos, local private helpers, UI text, isolated algorithm tweaks, or direct code explanation where the target file content is already self-sufficient, focus strictly on the target file. DO NOT perform wasteful broad searches across unrelated directories.
+  2) Level 2 (Contract / Dependency Scope): When altering public method signatures, interface contracts, shared DTOs/models, or renaming symbols, perform targeted Grep on the symbol to locate direct callers and verify regressions.
+  3) Level 3 (Systemic Bug / Complex Cross-Cutting Scope / Unknown Root Cause): For multi-service flow failures, database/ORM entity mapping, concurrency issues, state inconsistency, or when given 1-2 files for a complex bug whose root cause spans multiple layers, DO NOT be lazy or myopic! Never stop after merely reading the files directly mentioned. Proactively trace referenced services, interfaces, repository implementations, entity definitions, and configs across the call chain using Grep/Read before concluding with NO_TOOL_NEEDED.
+  4) NEVER conclude with NO_TOOL_NEEDED if essential context files, referenced interfaces, or unlocated callers remain uninspected.
 - Skills inspection: If the prompt contains <skills> and a skill relates to the task, inspect its SKILL.md if needed. DO NOT re-read SKILL.md if it was already read in prior turns or evidence.
 - Prefer direct, lightweight inspection tools over heavy multi-turn subagents when exploring files or checking workspace context. Do not delegate simple file reading or project inspection to subagents.
 - DO NOT answer with NO_TOOL_NEEDED when project files, code inspection, or workspace context need to be gathered. First gather real evidence using tools!
@@ -693,6 +705,11 @@ func extractTargetWorkspacePath(texts ...string) string {
 	return ""
 }
 
+func isSystemConfigFile(path string) bool {
+	base := strings.ToLower(filepath.Base(path))
+	return base == "claude.md" || base == "constraints.md" || strings.HasPrefix(base, ".claude") || strings.HasPrefix(base, ".cursor") || strings.HasPrefix(base, ".git")
+}
+
 func trySynthesizeWorkspaceInspection(prompt string, refusalText string, tools []map[string]any, choice any) ([]detectedToolCall, bool) {
 	targetPath := extractTargetWorkspacePath(refusalText, prompt)
 	if targetPath == "" {
@@ -726,17 +743,25 @@ func trySynthesizeWorkspaceInspection(prompt string, refusalText string, tools [
 	var toolName string
 	var fn map[string]any
 	isDirTool := false
-	if isWriteTask {
+
+	hasExt := filepath.Ext(targetPath) != ""
+	// Never synthesize write/edit for directories or system config files (e.g. CLAUDE.md)
+	// Synthesizing blind writes to CLAUDE.md triggers upstream "Self Modification" safety alarms.
+	if isWriteTask && hasExt && !isSystemConfigFile(targetPath) {
 		toolName, fn = findToolByKeywords(writeToolKeywords)
 		if toolName == "" {
 			toolName, fn = findToolByKeywords(editToolKeywords)
 		}
 	}
+	if toolName == "" && hasExt {
+		toolName, fn = findToolByKeywords(fileToolKeywords)
+		isDirTool = false
+	}
 	if toolName == "" {
 		toolName, fn = findToolByKeywords(dirToolKeywords)
 		isDirTool = true
 	}
-	if toolName == "" {
+	if toolName == "" && !hasExt {
 		toolName, fn = findToolByKeywords(fileToolKeywords)
 		isDirTool = false
 	}
@@ -771,8 +796,8 @@ func trySynthesizeWorkspaceInspection(prompt string, refusalText string, tools [
 
 	args := map[string]any{}
 	finalPath := targetPath
-	if !isDirTool {
-		for _, f := range []string{"CLAUDE.md", "README.md", "README"} {
+	if !isDirTool && !hasExt {
+		for _, f := range []string{"README.md", "README"} {
 			if strings.Contains(prompt, f) || strings.Contains(refusalText, f) {
 				if strings.Contains(finalPath, `\`) {
 					finalPath = finalPath + `\` + f

@@ -152,6 +152,8 @@ func parseFencedHeadersAndBody(args string) map[string]any {
 			result["new"] = strings.TrimRight(replaceContent, "\r\n")
 			result["search"] = result["old"]
 			result["replace"] = result["new"]
+			result["old_string"] = result["old"]
+			result["new_string"] = result["new"]
 			headerPart := args[:searchStart]
 			for _, line := range strings.Split(headerPart, "\n") {
 				line = strings.TrimSpace(line)
@@ -159,6 +161,10 @@ func parseFencedHeadersAndBody(args string) map[string]any {
 					k := strings.TrimSpace(line[:idx])
 					v := strings.TrimSpace(line[idx+1:])
 					result[k] = v
+					if k == "file" || k == "path" || k == "target" || k == "target_file" {
+						result["file_path"] = v
+						result["path"] = v
+					}
 				}
 			}
 			return result
@@ -175,6 +181,10 @@ func parseFencedHeadersAndBody(args string) map[string]any {
 			k := strings.TrimSpace(line[:idx])
 			v := strings.TrimSpace(line[idx+1:])
 			result[k] = v
+			if k == "file" || k == "path" || k == "target" || k == "target_file" {
+				result["file_path"] = v
+				result["path"] = v
+			}
 		} else {
 			bodyStart = i
 			break
@@ -185,9 +195,11 @@ func parseFencedHeadersAndBody(args string) map[string]any {
 		body := strings.Join(lines[bodyStart:], "\n")
 		body = strings.TrimRight(body, "\r\n")
 		if len(result) == 0 {
-			result["command"] = strings.TrimSpace(body)
+			trimmedBody := strings.TrimSpace(body)
+			result["command"] = trimmedBody
 			result["content"] = body
-			result["path"] = strings.TrimSpace(body)
+			result["path"] = trimmedBody
+			result["file_path"] = trimmedBody
 		} else {
 			result["content"] = body
 			result["body"] = body

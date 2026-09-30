@@ -1,32 +1,46 @@
 package web
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
-func TestToolPlanningModeDefaultsToRouter(t *testing.T) {
-	for _, raw := range []string{"", "router", "ROUTER", "unexpected"} {
-		if got := toolPlanningMode(raw); got != "router" {
-			t.Fatalf("toolPlanningMode(%q)=%q, want router", raw, got)
+func TestToolPlanningModeDefaultsToDirect(t *testing.T) {
+	for _, raw := range []string{"", "direct", "DIRECT", "native", "NATIVE", "unexpected"} {
+		if got := toolPlanningMode(raw); got != "direct" {
+			t.Fatalf("toolPlanningMode(%q)=%q, want direct", raw, got)
 		}
 	}
 }
 
-func TestToolPlanningModeRejectsUnverifiedNativeMode(t *testing.T) {
-	if got := toolPlanningMode(" native "); got != "router" {
-		t.Fatalf("toolPlanningMode(native)=%q, want router", got)
+func TestToolPlanningModeSupportsRouterAndSlim(t *testing.T) {
+	if got := toolPlanningMode("router"); got != "router" {
+		t.Fatalf("toolPlanningMode(router)=%q, want router", got)
 	}
-}
-
-func TestToolPlanningModeSupportsRouterSlim(t *testing.T) {
-	for _, raw := range []string{"router_slim", "ROUTER_SLIM", " router_slim "} {
-		if got := toolPlanningMode(raw); got != "router_slim" {
-			t.Fatalf("toolPlanningMode(%q)=%q, want router_slim", raw, got)
+	if got := toolPlanningMode("router_slim"); got != "router_slim" {
+		t.Fatalf("toolPlanningMode(router_slim)=%q, want router_slim", got)
+	}
+	for _, mode := range []string{"direct", "native", "router", "router_slim", ""} {
+		if !isValidToolPlanningMode(mode) {
+			t.Fatalf("expected mode %q to be valid", mode)
 		}
-	}
-	if !isValidToolPlanningMode("router_slim") || !isValidToolPlanningMode("router") || !isValidToolPlanningMode("") {
-		t.Fatal("expected valid modes to pass")
 	}
 	if isValidToolPlanningMode("invalid_mode") {
 		t.Fatal("expected invalid mode to fail")
+	}
+}
+
+func TestFormatDirectToolPrompt(t *testing.T) {
+	tools := testTools()
+	prompt := formatDirectToolPrompt("what is the weather?", tools, "auto")
+	if !strings.Contains(prompt, "<tools>") || !strings.Contains(prompt, "<tool_name>get_weather</tool_name>") {
+		t.Fatalf("expected direct tools prompt to contain get_weather schema: %s", prompt)
+	}
+	if !strings.Contains(prompt, "<parameters>") || !strings.Contains(prompt, "city") {
+		t.Fatalf("expected direct tools prompt to contain parameters schema: %s", prompt)
+	}
+	if strings.Contains(prompt, "CRITICAL: NO SANDBOX") {
+		t.Fatal("direct tool prompt must not contain router negative constraints")
 	}
 }
 

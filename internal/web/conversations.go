@@ -851,6 +851,16 @@ func extractSkillsFromMessages(messages []oaiMsg) []map[string]string {
 }
 
 func getRouterDirectivesInfo(planningMode string, hasTools bool, tools []map[string]any) map[string]any {
+	if planningMode == ToolPlanningModeDirect || (planningMode != ToolPlanningModeRouter && planningMode != ToolPlanningModeRouterSlim) {
+		return map[string]any{
+			"planningMode":   ToolPlanningModeDirect,
+			"enabled":        hasTools,
+			"title":          "原生单轮透传模式 (Direct Native Tooling)",
+			"description":    "单轮高保真架构：直接保留完整未压缩的 JSON Schema（包含所有类型、嵌套对象、枚举与描述），通过标准规范注入上下文。由模型端到端自主进行思考、规划与工具调用，单轮完成，零多余往返延时与 Prompt 污染。",
+			"rules":          []string{"原生单轮端到端执行（免多阶段往返）", "完整保留 JSON Schema 约束与描述", "零 Router 负向提示词污染", "极速响应（3~6秒直接出结果）"},
+			"promptTemplate": formatDirectToolPrompt("[USER_REQUEST_AND_CONTEXT]", tools, "auto"),
+		}
+	}
 	rules := []string{
 		"本地宿主权限：所有工具均直接在调用者的本地操作系统运行，具备本地工作区、相对路径与绝对路径的直接读写执行权限。",
 		"严禁沙箱幻觉：网关是内部调度器，严禁声称处于云端沙箱或无本地权限，严禁索取 ZIP 压缩包上传。",

@@ -81,9 +81,13 @@ func validateDetectedToolCalls(calls []detectedToolCall, tools []map[string]any,
 			rejected = append(rejected, rejectedToolCall{Name: call.Name, Reason: "arguments are not a JSON object"})
 			continue
 		}
+		args = normalizeToolArgsForFunction(args, fn)
 		if err := schemaValid(args, fn); err != nil {
 			rejected = append(rejected, rejectedToolCall{Name: call.Name, Reason: err.Error()})
 			continue
+		}
+		if updated, err := json.Marshal(args); err == nil {
+			call.Arguments = updated
 		}
 		if call.ID == "" {
 			call.ID = callID(call.Name, string(call.Arguments), len(valid))
@@ -94,6 +98,102 @@ func validateDetectedToolCalls(calls []detectedToolCall, tools []map[string]any,
 		valid = append(valid, call)
 	}
 	return valid, rejected
+}
+
+var knownParameterAliases = map[string][]string{
+	"file_path":           {"path", "filePath", "filepath", "target_file", "targetFile", "file", "filename", "AbsolutePath", "TargetFile", "target"},
+	"path":                {"file_path", "filePath", "filepath", "target_file", "file", "filename", "AbsolutePath", "TargetFile", "directory_path", "dir_path", "DirectoryPath", "target"},
+	"AbsolutePath":        {"file_path", "path", "filePath", "filepath", "target_file", "targetFile", "file", "filename", "TargetFile", "target"},
+	"TargetFile":          {"file_path", "path", "filePath", "filepath", "target_file", "targetFile", "file", "filename", "AbsolutePath", "target"},
+	"SearchDirectory":     {"path", "directory_path", "dir_path", "DirectoryPath", "target_directory", "dir", "directory", "SearchPath"},
+	"SearchPath":          {"path", "directory_path", "dir_path", "DirectoryPath", "SearchDirectory", "target_directory", "dir"},
+	"old_string":          {"old", "old_str", "search", "oldString", "oldContent", "target_content", "TargetContent", "target", "Target"},
+	"new_string":          {"new", "new_str", "replace", "newString", "newContent", "replacement_content", "ReplacementContent", "replacement", "Replacement"},
+	"old_str":             {"old_string", "old", "search", "oldString", "oldContent", "target_content", "TargetContent"},
+	"new_str":             {"new_string", "new", "replace", "newString", "newContent", "replacement_content", "ReplacementContent"},
+	"TargetContent":       {"old_string", "old", "search", "oldString", "oldContent", "target_content"},
+	"ReplacementContent":  {"new_string", "new", "replace", "newString", "newContent", "replacement_content"},
+	"command":             {"cmd", "bash", "script", "CommandLine"},
+	"cmd":                 {"command", "script", "CommandLine"},
+	"CommandLine":         {"command", "cmd", "bash", "script"},
+	"content":             {"text", "body", "file_text", "code", "CodeContent"},
+	"CodeContent":         {"content", "text", "body", "code"},
+	"pattern":             {"query", "search", "regex", "Query", "Pattern"},
+	"Pattern":             {"pattern", "query", "search", "regex", "Query"},
+	"query":               {"pattern", "search", "q", "Query", "Pattern"},
+	"Query":               {"query", "pattern", "search", "Pattern"},
+	"directory_path":      {"path", "dir_path", "DirectoryPath", "target_directory", "dir", "directory", "SearchDirectory"},
+	"DirectoryPath":       {"path", "directory_path", "dir_path", "target_directory", "dir", "directory", "SearchDirectory"},
+}
+
+func normalizeToolArgsForFunction(args map[string]any, fn map[string]any) map[string]any {
+	if args == nil {
+		args = make(map[string]any)
+	}
+	params, _ := fn["parameters"].(map[string]any)
+	if params == nil {
+		return args
+	}
+	props, _ := params["properties"].(map[string]any)
+	reqList, _ := params["required"].([]any)
+	reqSet := make(map[string]bool)
+	for _, r := range reqList {
+		if s, ok := r.(string); ok {
+			reqSet[s] = true
+		}
+	}
+
+	targetKeys := make(map[string]bool)
+	for k := range props {
+		targetKeys[k] = true
+	}
+	for k := range reqSet {
+		targetKeys[k] = true
+	}
+
+	for targetKey := range targetKeys {
+		val, exists := args[targetKey]
+		isEmptyStr := false
+		if s, ok := val.(string); ok && strings.TrimSpace(s) == "" && reqSet[targetKey] {
+			isEmptyStr = true
+		}
+
+		if !exists || isEmptyStr {
+			if aliases, ok := knownParameterAliases[targetKey]; ok {
+				for _, alias := range aliases {
+					if aVal, aExists := args[alias]; aExists {
+						if as, ok := aVal.(string); !ok || strings.TrimSpace(as) != "" {
+							args[targetKey] = aVal
+							if props != nil {
+								if _, declared := props[alias]; !declared {
+									delete(args, alias)
+								}
+							}
+							exists = true
+							break
+						}
+					}
+				}
+			}
+		}
+
+		if !exists {
+			canonicalTarget := strings.ToLower(strings.ReplaceAll(targetKey, "_", ""))
+			for argK, argV := range args {
+				if strings.ToLower(strings.ReplaceAll(argK, "_", "")) == canonicalTarget {
+					args[targetKey] = argV
+					if props != nil {
+						if _, declared := props[argK]; !declared {
+							delete(args, argK)
+						}
+					}
+					break
+				}
+			}
+		}
+	}
+
+	return args
 }
 
 func toolChoiceAllows(choice any, name string) bool {
@@ -205,64 +305,6 @@ var toolRefusalPatterns = []string{
 	"not actually registered",
 	"not actually available",
 	"not available in this session",
-	"工具不可用",
-	"工具未暴露",
-	"未映射",
-	"未映射 windows 工作区",
-	"缺少能够直接访问",
-	"缺少宿主",
-	"无法访问本地文件",
-	"无法直接访问",
-	"没有权限访问本地",
-	"无法修改本地文件",
-	"无法将文档写入",
-	"无法将文件写入",
-	"无法写入本地",
-	"没有读取到项目文件",
-	"未读取到项目文件",
-	"未读取到任何文件",
-	"无法读取项目文件",
-	"当前会话中没有读取到",
-	"无法做基于源码的可靠评估",
-	"暂时无法做基于源码",
-	"无法直接读取本地",
-	"无法查看本地文件",
-	"无法访问本地路径",
-	"无法直接在本地",
-	"不能直接操作本地",
-	"并不是当前对话环境",
-	"不是当前对话环境",
-	"实际可调用的工具",
-	"并不是实际可调用",
-	"不是实际可调用",
-	"并不是可调用的工具",
-	"不是可调用的工具",
-	"无法执行你在消息中要求的",
-	"我无法执行你在消息中要求的",
-	"无法执行你要求的",
-	"你可以直接更新",
-	"你可以手动更新",
-	"你可以自行更新",
-	"建议你手动更新",
-	"建议手动更新",
-	"你可以手动修改",
-	"你可以手动写入",
-	"你可以手动创建",
-	"没有实际修改",
-	"没有修改仓库文件",
-	"没有实际修改仓库文件的证据",
-	"没有实际修改文件的证据",
-	"不能说代码已经完成修改",
-	"只能给出上述",
-	"只能给出改造方案",
-	"只能给出修改方案",
-	"只能给出修复方案",
-	"只能提供改造方案",
-	"只能提供修改方案",
-	"只能给出方案",
-	"只能提供方案",
-	"我只能给出",
-	"我只能提供",
 	"not available in the current conversation",
 	"not available in this environment",
 	"not callable in the current environment",
@@ -270,6 +312,20 @@ var toolRefusalPatterns = []string{
 	"cannot execute the requested tools",
 	"cannot invoke tools",
 	"no tools are available in this conversation",
+	"工具不可用",
+	"工具未暴露",
+	"当前会话无法调用工具",
+	"无法调用工具",
+	"并非当前对话环境",
+	"不是当前对话环境",
+	"并不是实际可调用",
+	"不是实际可调用",
+	"并不是可调用的工具",
+	"不是可调用的工具",
+	"并非当前可调用",
+	"不是当前环境可调用",
+	"我无法执行你在消息中要求的",
+	"无法执行你在消息中要求的",
 }
 
 func isToolRefusal(text string) bool {
@@ -280,81 +336,20 @@ func isToolRefusal(text string) bool {
 		}
 	}
 
-	// 语义特征句匹配
+	// Unambiguous refusal to access the caller's local workspace/files
 	specialPhrases := []string{
-		"关键限制",
-		"无法直接读取",
-		"无法直接访问",
-		"无法直接查看",
-		"无法直接扫描",
-		"无法直接获取",
-		"当前无法读取",
-		"当前无法访问",
-		"没有权限读取",
-		"没有权限访问",
-		"无法在本地",
-		"不能在本地",
-		"无法对本地",
-		"不能对本地",
-		"我无法读取你",
-		"我无法访问你",
-		"无法直接读取你",
-		"无法直接访问你",
-		"实际可调用的工具",
-		"可调用的工具",
-		"无法执行你在消息中要求的",
-		"我无法执行你在消息中要求的",
-		"当前无法调用工具",
-		"无法调用工具",
-		"并非当前可调用",
-		"不是当前环境可调用",
+		"无法直接读取你本地",
+		"无法直接访问你本地",
+		"无法访问你的本地",
+		"无法读取你的本地",
+		"我无法读取你本地",
+		"我无法访问你本地",
+		"没有权限访问本地",
+		"没有权限访问你的本地",
 	}
 	for _, sp := range specialPhrases {
 		if strings.Contains(low, sp) {
 			return true
-		}
-	}
-
-	actionPrefixes := []string{"并不是", "不是", "并非", "无法", "不能", "没有权限", "没权限", "当前无法", "暂时无法", "不可直接", "不能直接", "无法直接", "难以直接", "无法自行", "无法主动"}
-	actionVerbs := []string{"读取", "访问", "查看", "扫描", "获取", "操作", "打开", "写入", "修改", "编辑", "执行", "检视", "浏览", "调用"}
-	actionTargets := []string{"本地", "文件", "项目", "目录", "代码", "工程", "路径", "内容", "workspace", "磁盘", "工具", "tool", "tools", "函数", "function", "命令", "command"}
-
-	for _, pre := range actionPrefixes {
-		if idx := strings.Index(low, pre); idx >= 0 {
-			tail := low[idx+len(pre):]
-			if len(tail) > 120 {
-				tail = tail[:120]
-			}
-			hasVerb := false
-			for _, v := range actionVerbs {
-				if strings.Contains(tail, v) {
-					hasVerb = true
-					break
-				}
-			}
-			if hasVerb {
-				for _, tgt := range actionTargets {
-					if strings.Contains(tail, tgt) {
-						return true
-					}
-				}
-			}
-		}
-	}
-
-	enPrefixes := []string{"cannot", "can't", "unable to", "don't have access", "do not have access", "no access", "not actual", "not real"}
-	enTargets := []string{"local", "file", "directory", "project", "workspace", "filesystem", "path", "tool", "tools", "command", "function"}
-	for _, pre := range enPrefixes {
-		if idx := strings.Index(low, pre); idx >= 0 {
-			tail := low[idx+len(pre):]
-			if len(tail) > 120 {
-				tail = tail[:120]
-			}
-			for _, tgt := range enTargets {
-				if strings.Contains(tail, tgt) {
-					return true
-				}
-			}
 		}
 	}
 

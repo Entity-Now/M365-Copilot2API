@@ -58,3 +58,114 @@ func TestStreamPlainProse(t *testing.T) {
 		t.Fatalf("plain prose altered.\n want %q\n  got %q", full, got)
 	}
 }
+
+func TestToolStreamStateSuppressesXMLToolCall(t *testing.T) {
+	tools := []map[string]any{
+		{"type": "function", "function": map[string]any{"name": "Read"}},
+	}
+	st := newToolStreamState(tools)
+	var text strings.Builder
+	var emitted strings.Builder
+	emit := func(s string) error {
+		emitted.WriteString(s)
+		return nil
+	}
+
+	chunks := []string{
+		"I will inspect the file.\n",
+		"<tool_calls>",
+		"<tool_call>",
+		"<name>Read</name>",
+		"<arguments>{\"file_path\":\"main.go\"}</arguments>",
+		"</tool_call>",
+		"</tool_calls>",
+	}
+	for _, c := range chunks {
+		_ = st.processStreamChunk(chathub.StreamEvent{Kind: "text", Text: c}, &text, emit)
+	}
+
+	// The emitted text should ONLY be the prose, never the <tool_calls> XML!
+	if strings.Contains(emitted.String(), "<tool_calls>") || strings.Contains(emitted.String(), "Read") {
+		t.Fatalf("tool call XML leaked to emitted text: %q", emitted.String())
+	}
+	if emitted.String() != "I will inspect the file.\n" {
+		t.Fatalf("expected prose to be emitted, got: %q", emitted.String())
+	}
+}
+
+func TestToolStreamStateEmitsRegularProseWithTools(t *testing.T) {
+	tools := []map[string]any{
+		{"type": "function", "function": map[string]any{"name": "Read"}},
+	}
+	st := newToolStreamState(tools)
+	var text strings.Builder
+	var emitted strings.Builder
+	emit := func(s string) error {
+		emitted.WriteString(s)
+		return nil
+	}
+
+	prose := "Quicksort is an in-place sorting algorithm that uses divide-and-conquer."
+	for _, r := range prose {
+		_ = st.processStreamChunk(chathub.StreamEvent{Kind: "text", Text: string(r)}, &text, emit)
+	}
+	_ = st.flushRemaining(&text, emit)
+
+	if emitted.String() != prose {
+		t.Fatalf("expected full prose emitted, got: %q", emitted.String())
+	}
+}
+
+func TestToolStreamStateAllowsRegularJSONBlock(t *testing.T) {
+	tools := []map[string]any{
+		{"type": "function", "function": map[string]any{"name": "Read"}},
+	}
+	st := newToolStreamState(tools)
+	var text strings.Builder
+	var emitted strings.Builder
+	emit := func(s string) error {
+		emitted.WriteString(s)
+		return nil
+	}
+
+	content := "Here is the configuration:\n\n```json\n{\n  \"port\": 8080,\n  \"host\": \"localhost\"\n}\n```\n\nEnjoy!"
+	for _, r := range content {
+		_ = st.processStreamChunk(chathub.StreamEvent{Kind: "text", Text: string(r)}, &text, emit)
+	}
+	_ = st.flushRemaining(&text, emit)
+
+	if emitted.String() != content {
+		t.Fatalf("expected regular json block to be emitted, got: %q\nwant: %q", emitted.String(), content)
+	}
+}
+
+func TestToolStreamStateSuppressesToolNamedBlock(t *testing.T) {
+	tools := []map[string]any{
+		{"type": "function", "function": map[string]any{"name": "Read"}},
+	}
+	st := newToolStreamState(tools)
+	var text strings.Builder
+	var emitted strings.Builder
+	emit := func(s string) error {
+		emitted.WriteString(s)
+		return nil
+	}
+
+	chunks := []string{
+		"Calling tool:\n\n",
+		"```Read\n",
+		"{\"file_path\": \"foo.go\"}\n",
+		"```",
+	}
+	for _, c := range chunks {
+		_ = st.processStreamChunk(chathub.StreamEvent{Kind: "text", Text: c}, &text, emit)
+	}
+
+	if strings.Contains(emitted.String(), "```Read") || strings.Contains(emitted.String(), "foo.go") {
+		t.Fatalf("tool block leaked to text stream: %q", emitted.String())
+	}
+	if emitted.String() != "Calling tool:\n\n" {
+		t.Fatalf("expected only pre-tool text, got: %q", emitted.String())
+	}
+}
+

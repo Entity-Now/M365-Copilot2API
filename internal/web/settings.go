@@ -217,7 +217,7 @@ func validateSettings(v runtimeSettings) error {
 		return fmt.Errorf("场景标识不能为空")
 	}
 	if !isValidToolPlanningMode(v.ToolPlanningMode) {
-		return fmt.Errorf("toolPlanningMode 必须为 router 或 router_slim")
+		return fmt.Errorf("toolPlanningMode 必须为 direct, router 或 router_slim")
 	}
 	return nil
 }

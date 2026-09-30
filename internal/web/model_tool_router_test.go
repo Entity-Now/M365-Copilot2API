@@ -65,6 +65,24 @@ func TestModelToolRouterPromptSufficientContextConstraint(t *testing.T) {
 	}
 }
 
+func TestModelToolRouterPromptAutonomousDepthCalibration(t *testing.T) {
+	p := modelToolRouterPrompt("fix bug in OrderService.cs", testTools(), "auto")
+	if !strings.Contains(p, "Level 1 (Local / Self-Contained Scope)") {
+		t.Fatalf("expected Level 1 in router prompt: %s", p)
+	}
+	if !strings.Contains(p, "Level 2 (Contract / Dependency Scope)") {
+		t.Fatalf("expected Level 2 in router prompt: %s", p)
+	}
+	if !strings.Contains(p, "Level 3 (Systemic Bug / Complex Cross-Cutting Scope / Unknown Root Cause)") {
+		t.Fatalf("expected Level 3 in router prompt: %s", p)
+	}
+
+	slim := modelToolSlimRouterPrompt("fix bug in OrderService.cs", testTools(), "auto")
+	if !strings.Contains(slim, "AUTONOMOUS INVESTIGATION DEPTH & SCOPE CALIBRATION") {
+		t.Fatalf("expected depth calibration in slim prompt: %s", slim)
+	}
+}
+
 func TestParseModelToolDecisionRejectsSandboxHallucination(t *testing.T) {
 	text := `但当前会话中没有读取到项目文件，/mnt/data 为空，因此暂时无法做基于源码的可靠评估，也无法将文档写入你提到的项目根目录。请将项目目录打包为 ZIP 上传，或至少上传以下内容：
 
@@ -246,13 +264,13 @@ func TestIsToolRefusalNoModificationEvidencePassiveAdvice(t *testing.T) {
 
 但目前我没有实际修改仓库文件的证据，因此不能说代码已经完成修改；我只能给出上述基于源码的精确改造方案。`
 
-	if !isToolRefusal(text) {
-		t.Fatalf("expected passive advice without modification evidence to be identified as tool refusal")
+	if isToolRefusal(text) {
+		t.Fatalf("expected passive advice to NOT be falsely identified as tool refusal")
 	}
 
 	calls, parsed := parseModelToolDecision(text, testTools(), "auto")
 	if parsed || len(calls) > 0 {
-		t.Fatalf("expected refusal to return parsed=false, got parsed=%v, calls=%v", parsed, calls)
+		t.Fatalf("expected no tool calls for plain advice, got parsed=%v, calls=%v", parsed, calls)
 	}
 }
 
