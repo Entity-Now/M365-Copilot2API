@@ -58,28 +58,67 @@ func TestParseModelToolDecisionMultilineArgs(t *testing.T) {
 	}
 }
 
-func TestModelToolRouterPromptSufficientContextConstraint(t *testing.T) {
+func TestModelToolRouterPromptToolAcquisitionMandate(t *testing.T) {
 	p := modelToolRouterPrompt("analyze project files", testTools(), "auto")
-	if !strings.Contains(p, "Sufficient context required") {
-		t.Fatalf("expected Sufficient context required in prompt: %s", p)
+	if !strings.Contains(p, "TOOLS EXIST TO REMOVE UNCERTAINTY") {
+		t.Fatalf("expected TOOLS EXIST TO REMOVE UNCERTAINTY in router prompt: %s", p)
 	}
-}
-
-func TestModelToolRouterPromptAutonomousDepthCalibration(t *testing.T) {
-	p := modelToolRouterPrompt("fix bug in OrderService.cs", testTools(), "auto")
-	if !strings.Contains(p, "Level 1 (Local / Self-Contained Scope)") {
-		t.Fatalf("expected Level 1 in router prompt: %s", p)
+	if !strings.Contains(p, "ACTION REFLEX (DO NOT SPECULATE") {
+		t.Fatalf("expected ACTION REFLEX in router prompt: %s", p)
 	}
-	if !strings.Contains(p, "Level 2 (Contract / Dependency Scope)") {
-		t.Fatalf("expected Level 2 in router prompt: %s", p)
+	if !strings.Contains(p, "STRICT PROHIBITION ON DESCRIBING ACTIONS OR PASSIVITY") {
+		t.Fatalf("expected action prohibition in router prompt: %s", p)
 	}
-	if !strings.Contains(p, "Level 3 (Systemic Bug / Complex Cross-Cutting Scope / Unknown Root Cause)") {
-		t.Fatalf("expected Level 3 in router prompt: %s", p)
+	if !strings.Contains(p, "Do not explain what should be checked: Check it") {
+		t.Fatalf("expected directive check it in router prompt: %s", p)
+	}
+	// Verify that the old counterproductive scope analysis levels are removed
+	if strings.Contains(p, "Level 1 (Local / Self-Contained Scope)") {
+		t.Fatalf("Level 1 should be eliminated from router prompt to avoid analytical paralysis: %s", p)
 	}
 
 	slim := modelToolSlimRouterPrompt("fix bug in OrderService.cs", testTools(), "auto")
-	if !strings.Contains(slim, "AUTONOMOUS INVESTIGATION DEPTH & SCOPE CALIBRATION") {
-		t.Fatalf("expected depth calibration in slim prompt: %s", slim)
+	if !strings.Contains(slim, "TOOLS EXIST TO REMOVE UNCERTAINTY") {
+		t.Fatalf("expected TOOLS EXIST TO REMOVE UNCERTAINTY in slim prompt: %s", slim)
+	}
+	if !strings.Contains(slim, "ACTION REFLEX") {
+		t.Fatalf("expected ACTION REFLEX in slim prompt: %s", slim)
+	}
+	if strings.Contains(slim, "AUTONOMOUS INVESTIGATION DEPTH & SCOPE CALIBRATION") {
+		t.Fatalf("AUTONOMOUS INVESTIGATION DEPTH should be eliminated from slim prompt: %s", slim)
+	}
+}
+
+func TestParseModelToolDecisionRejectsActionDescriptionAndPassivity(t *testing.T) {
+	passiveTexts := []string{
+		"基于我实际读到的代码，目前只能给出初步结论和重构计划，但是关于并发锁机制未验证，我不能确认没有问题。NO_TOOL_NEEDED",
+		"目前我不能确认没有问题，根据已读取代码，DatabaseService.cs 还需要进一步检查。NO_TOOL_NEEDED",
+		"I would inspect OrderService.cs and check the repository mapping before concluding. Next I would verify the error handling. NO_TOOL_NEEDED",
+		"Based on currently read code, further verification is needed to determine the root cause. NO_TOOL_NEEDED",
+		"我需要进一步检查 user_handler.go 中的认证流程，建议先查看配置文件。NO_TOOL_NEEDED",
+	}
+
+	for _, text := range passiveTexts {
+		calls, ok := parseModelToolDecision(text, testTools(), "auto")
+		if ok || len(calls) > 0 {
+			t.Fatalf("expected passivity/action description text to be rejected, but got ok=%v calls=%v for text:\n%s", ok, calls, text)
+		}
+	}
+}
+
+func TestParseModelToolDecisionAllowsLegitimateTechnicalText(t *testing.T) {
+	legitimateTexts := []string{
+		"为了在 linux container 中部署并支持 upload zip，可以使用官方 archive/zip 模块。注意在高并发下某些配置未验证，建议检查超时时间。NO_TOOL_NEEDED",
+		"使用 Python sandbox 时可以借助 seccomp 隔离。Next steps:\n1. 编写规则\n2. 部署测试\nNO_TOOL_NEEDED",
+		"如果提示无法执行命令，建议查看环境变量 PATH 是否正确配置。NO_TOOL_NEEDED",
+		"当前模块代码逻辑完整，建议先查看单元测试覆盖率。NO_TOOL_NEEDED",
+	}
+
+	for _, text := range legitimateTexts {
+		calls, ok := parseModelToolDecision(text, testTools(), "auto")
+		if !ok || len(calls) != 0 {
+			t.Fatalf("expected legitimate technical response to be accepted as NO_TOOL_NEEDED, but got ok=%v calls=%v for text:\n%s", ok, calls, text)
+		}
 	}
 }
 

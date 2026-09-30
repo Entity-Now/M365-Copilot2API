@@ -2331,8 +2331,8 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		}
 		calls, parsed := parseModelToolDecision(routeRes.Text, toolMaps, body.ToolChoice)
 		log.Printf("[req-trace] id=%s stage=router_initial_decision calls=%d parsed=%t text_preview=%q", requestID, len(calls), parsed, compactToolResult(routeRes.Text, 80))
-		if isSandboxHallucination(routeRes.Text) || isToolRefusal(routeRes.Text) {
-			log.Printf("[router-sandbox-eject] id=%s model hallucinated sandbox or refused tools: %q", requestID, compactToolResult(routeRes.Text, 120))
+		if isSandboxHallucination(routeRes.Text) || isToolRefusal(routeRes.Text) || isPassivityOrActionDescription(routeRes.Text) {
+			log.Printf("[router-sandbox-eject] id=%s model hallucinated sandbox, refused tools, or described actions passively: %q", requestID, compactToolResult(routeRes.Text, 120))
 			toolList := strings.Join(declaredToolNames(toolMaps), ", ")
 			var toolDefsStr string
 			if planningMode == "router_slim" {
@@ -2360,11 +2360,26 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			if len(writeToolCandidates) > 0 {
 				writeHint = fmt.Sprintf("\n- ACTIVE WRITE/EDIT TOOLS: The caller has provided these tools specifically for writing or modifying files: [%s]. You MUST call one of them via CALL_TOOL now if files need to be written or updated!\n", strings.Join(writeToolCandidates, ", "))
 			}
-			correctionText := fmt.Sprintf(`CRITICAL CORRECTION:
+			var correctionDirective string
+			if isPassivityOrActionDescription(routeRes.Text) && !isSandboxHallucination(routeRes.Text) && !isToolRefusal(routeRes.Text) {
+				correctionDirective = fmt.Sprintf(`CRITICAL ACTION CORRECTION:
+You described an action, proposed future steps, or expressed uncertainty instead of calling tools:
+%q
+
+TOOLS EXIST TO REMOVE UNCERTAINTY.
+1. When uncertain: USE TOOLS.
+2. DO NOT describe what should be checked: Check it now!
+3. DO NOT propose file edits: Edit the file!
+4. DO NOT say "further verification is needed" or "cannot confirm without checking": Call the tools to verify right now!
+5. ALL client tools [%s] (e.g. Read, Write, Edit, Glob, Bash) are ACTIVE, FULLY REGISTERED, and execute directly in the caller's local OS with full filesystem access.%s`, compactToolResult(routeRes.Text, 160), toolList, writeHint)
+			} else {
+				correctionDirective = fmt.Sprintf(`CRITICAL CORRECTION:
 You incorrectly claimed that tools cannot be executed, that tools are not available in this environment, that files cannot be accessed, or told the user to manually update or copy-paste files!
 1. You are an automated internal tool router for a local host, NOT a conversational chatbot.
 2. ALL client tools [%s] (e.g. Read, Write, Edit, Glob, Bash) are ACTIVE, FULLY REGISTERED, and execute directly in the caller's local OS with full filesystem access.%s
-3. NEVER tell the user to manually update or copy content! If writing, editing, or creating files was requested, YOU MUST INVOKE the write/edit tool to do it!
+3. NEVER tell the user to manually update or copy content! If writing, editing, or creating files was requested, YOU MUST INVOKE the write/edit tool to do it!`, toolList, writeHint)
+			}
+			correctionText := fmt.Sprintf(`%s
 4. Real client tools available: [%s]
 Available tools:
 %s
@@ -2378,7 +2393,7 @@ User request and evidence:
 OUTPUT FORMAT:
 CALL_TOOL: tool_name({"arg1":"value1"})
 
-Decision:`, toolList, writeHint, toolList, toolDefsStr, prompt+"\n"+activeLedger.RouterContext())
+Decision:`, correctionDirective, toolList, toolDefsStr, prompt+"\n"+activeLedger.RouterContext())
 
 			retryRes, retryErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: correctionText, Tone: tone, Attachments: body.Attachments, LicenseType: toolCfg.LicenseType, Scenario: toolCfg.Scenario, DisableMemory: true})
 			s.dropTransientConversation(acc.ID, acc.AccessToken, retryRes.ConversationID)
@@ -2396,7 +2411,7 @@ Decision:`, toolList, writeHint, toolList, toolDefsStr, prompt+"\n"+activeLedger
 			}
 		}
 		if !parsed {
-			if isSandboxHallucination(routeRes.Text) || isToolRefusal(routeRes.Text) {
+			if isSandboxHallucination(routeRes.Text) || isToolRefusal(routeRes.Text) || isPassivityOrActionDescription(routeRes.Text) {
 				if synthCalls, ok := trySynthesizeWorkspaceInspection(prompt, routeRes.Text, toolMaps, body.ToolChoice); ok && len(synthCalls) > 0 {
 					log.Printf("[router-synth-fallback] id=%s synthesized %d tool calls for unparsed refusal: %s", requestID, len(synthCalls), synthCalls[0].Name)
 					calls = synthCalls
@@ -2490,7 +2505,7 @@ Decision:`, routePrompt, internalCall.Name, string(internalCall.Arguments), outp
 
 		calls = filterCompletedCalls(calls, activeLedger)
 		calls, _ = validateCalls("router", calls)
-		if len(calls) == 0 && (isSandboxHallucination(routeRes.Text) || isToolRefusal(routeRes.Text)) {
+		if len(calls) == 0 && (isSandboxHallucination(routeRes.Text) || isToolRefusal(routeRes.Text) || isPassivityOrActionDescription(routeRes.Text)) {
 			if synthCalls, ok := trySynthesizeWorkspaceInspection(prompt, routeRes.Text, toolMaps, body.ToolChoice); ok && len(synthCalls) > 0 {
 				synthCalls = filterCompletedCalls(synthCalls, activeLedger)
 				synthCalls, _ = validateCalls("router", synthCalls)
