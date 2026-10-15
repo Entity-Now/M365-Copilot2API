@@ -452,15 +452,18 @@ curl http://127.0.0.1:4141/v1/messages \
 
 | 模型 | 上游 Tone | 默认推理级别 | 说明 |
 |------|-----------|-------------|------|
-| `claude-opus` | `Claude_Opus` | `medium` | **Anthropic 旗舰**，自动付费场景提权 (`OfficeWebPaidCopilot`)，支持优先配额监控 |
-| `claude-sonnet` | `Claude_Sonnet` | `medium` | Anthropic 主力模型 |
+| `gpt-6.1-sol` / `gpt-6-sol` | `Gpt_61_Sol_Reasoning` / `Gpt_6_Sol_Reasoning` | `medium` | GPT-6.1 Sol / GPT-6.0 Sol 推理模型（Included 场景全账号可用） |
+| `gpt-6-reasoning` / `gpt-6-astra` | `Gpt_6_Reasoning` / `Gpt_6_Astra` | `high` | **GPT-6 深度推理**（自动付费场景提权 `OfficeWebPaidCopilot`）/ GPT-6 Astra |
+| `claude-opus` / `claude-opus-4.8` / `claude-opus-5.5` | `Claude_Opus` | `medium` | **Anthropic 旗舰**，Opus 4.8（Included）/ Opus 5.5（自动 Paid 场景提权），支持优先配额监控 |
+| `claude-sonnet` / `claude-sonnet-5` / `claude-sonnet-5.5` | `Claude_Sonnet` / `Claude_Sonnet_5` | `medium` | Claude Sonnet 4.6 (Included) / Sonnet 5 & 5.5（Paid 自动提权） |
 | `claude-sonnet-reasoning` | `Claude_Sonnet_Reasoning` | `high` | 深度思考版 Sonnet |
-| `gpt-6-reasoning` | `Gpt_6_Reasoning` | `high` | **GPT-6 深度推理**，自动付费场景提权 (`OfficeWebPaidCopilot`) |
-| `gpt-5.6` / `gpt-5.6-sol` | `Gpt_5_6_Chat` | `low` | 速度型默认模型 |
+| `gpt-5.6` / `gpt-5.6-sol` | `Gpt_5_6_Chat` | `low` | GPT-5.6 快速聊天模型 |
 | `gpt-5.6-reasoning` / `*-terra` | `Gpt_5_6_Reasoning` | `medium` | GPT-5.6 推理模型 |
 | `gpt-5.5` / `gpt-5.5-reasoning` | `Gpt_5_5_Chat` / `Reasoning` | `medium` | GPT-5.5 系列 |
 | `gpt-5.4` / `gpt-5.4-reasoning` | `Gpt_5_4_Chat` / `Reasoning` | `medium` | GPT-5.4 系列 |
 | `gpt-5.2` / `gpt-5.2-reasoning` | `Gpt_5_2_Chat` / `Reasoning` | `medium` | GPT-5.2 系列 |
+| `grok-4.5` / `grok-reasoning` | `Grok_4_5` / `Grok_Reasoning` | `medium` | Grok 系列选择器 |
+| `flux-3` / `flux-4` | 专用图像上游 | - | 生图模型（走 `/v1/images` 真实图像管线） |
 | `gpt-image-2` | 专用图像上游 | - | 图像生成/理解通道 |
 
 - **付费场景自动提权 (Paid Scenario Elevation)**：针对 `Claude_Opus` 与 `Gpt_6_Reasoning`，网关会在握手时自动提升 WebSocket 参数为 `scenario=OfficeWebPaidCopilot` 及 `licenseType=Premium`，突破默认免费订阅下的 BotConnection 拒答。

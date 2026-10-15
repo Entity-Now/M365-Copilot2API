@@ -315,6 +315,7 @@ body{background:var(--bg);color:var(--text);font-family:"Inter","SF Pro Display"
     <nav class="nav">
       <button data-page="accounts" onclick="showPage('accounts')"><i data-lucide="users" style="width:16px;height:16px;flex-shrink:0"></i><span>账号</span></button>
       <button data-page="apikeys" onclick="showPage('apikeys')"><i data-lucide="key-round" style="width:16px;height:16px;flex-shrink:0"></i><span>API 密钥</span></button>
+      <button data-page="apis" onclick="showPage('apis')"><i data-lucide="layers" style="width:16px;height:16px;flex-shrink:0"></i><span>API 管理</span></button>
       <button data-page="conversations" onclick="showPage('conversations')"><i data-lucide="message-square" style="width:16px;height:16px;flex-shrink:0"></i><span>对话管理</span></button>
     </nav>
     <div class="nav-label">System</div>
@@ -603,6 +604,174 @@ if (response.output_text) {
         </div>
       </section>
 
+      <!-- API Management -->
+      <section id="page-apis" style="display:none">
+        <div class="page-head">
+          <div><h2 class="page-title">API 接口管理</h2><p class="page-sub">查看网关支持的全部 API 接口，配置免授权公开访问权限与生图默认模型</p></div>
+          <button class="btn" onclick="loadApis()"><i data-lucide="refresh-cw" style="width:14px;height:14px"></i> 刷新</button>
+        </div>
+
+        <!-- Global Permission & Config Card -->
+        <div class="card" style="margin-bottom:20px">
+          <div class="card-head">
+            <span class="card-title"><i data-lucide="shield-check" style="width:15px;height:15px;vertical-align:text-bottom;margin-right:4px"></i> 接口权限与生图全局配置</span>
+            <span style="font-size:11px;color:var(--muted)">修改后即时保存并全局生效</span>
+          </div>
+          <div class="card-body">
+            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:20px">
+              <div>
+                <label class="form-label" style="font-size:13px;font-weight:600;display:flex;align-items:center;gap:6px">
+                  <i data-lucide="image" style="width:15px;height:15px;color:var(--accent)"></i> 生图接口默认模型 (Default Model)
+                </label>
+                <select class="form-input" id="apiDefaultImageModel" style="margin-top:6px">
+                  <option value="gpt-image-2">gpt-image-2 (推荐 · 默认高质量)</option>
+                  <option value="gpt-image-1">gpt-image-1</option>
+                  <option value="dall-e-3">dall-e-3</option>
+                  <option value="flux-3">flux-3</option>
+                  <option value="flux-4">flux-4</option>
+                </select>
+                <p class="form-hint">客户端请求未指定 <code>model</code> 参数时，生图接口将默认采用该模型。</p>
+              </div>
+
+              <div>
+                <label class="form-label" style="font-size:13px;font-weight:600;display:flex;align-items:center;gap:6px">
+                  <i data-lucide="lock" style="width:15px;height:15px;color:var(--green)"></i> 生图接口访问权限 (Public Access)
+                </label>
+                <div style="display:flex;flex-direction:column;gap:12px;margin-top:8px">
+                  <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer">
+                    <input id="apiEnableImagePublic" type="checkbox" style="margin-top:3px">
+                    <span>
+                      <b>允许免授权调用生图接口</b>
+                      <span class="form-hint" style="display:block">启用后，<code>/v1/images/generations</code> 和 <code>/v1/images/edits</code> 无需 API Key 即可调用，由账号池自动调度健康账号处理。</span>
+                    </span>
+                  </label>
+                  <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer">
+                    <input id="apiEnableImageApi" type="checkbox" style="margin-top:3px">
+                    <span>
+                      <b>启用图片生成服务 (Enable Image API)</b>
+                      <span class="form-hint" style="display:block">开启后对外开放图片生成与编辑相关接口端点。</span>
+                    </span>
+                  </label>
+                </div>
+              </div>
+
+              <div>
+                <label class="form-label" style="font-size:13px;font-weight:600;display:flex;align-items:center;gap:6px">
+                  <i data-lucide="sliders" style="width:15px;height:15px;color:var(--purple)"></i> 其他接口公开访问选项
+                </label>
+                <div style="display:flex;flex-direction:column;gap:12px;margin-top:8px">
+                  <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer">
+                    <input id="apiEnableModelsPublic" type="checkbox" style="margin-top:3px">
+                    <span>
+                      <b>允许免授权获取模型列表 (<code>/v1/models</code>)</b>
+                      <span class="form-hint" style="display:block">便于客户端在未输入密钥时探活或拉取支持的模型清单。</span>
+                    </span>
+                  </label>
+                  <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer">
+                    <input id="apiEnableChatPublic" type="checkbox" style="margin-top:3px">
+                    <span>
+                      <b>允许免授权对话补全 (<code>/v1/chat/completions</code>)</b>
+                      <span class="form-hint" style="display:block">开启后任意客户端无需密钥即可发起对话请求。</span>
+                    </span>
+                  </label>
+                </div>
+              </div>
+            </div>
+
+            <div style="margin-top:20px;padding-top:16px;border-top:1px solid var(--line);display:flex;justify-content:flex-end">
+              <button class="btn primary" onclick="saveApiConfig()"><i data-lucide="save" style="width:14px;height:14px"></i> 保存 API 权限与参数</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Agent Client Config Generator Card -->
+        <div class="card" style="margin-bottom:20px">
+          <div class="card-head">
+            <span class="card-title"><i data-lucide="bot" style="width:15px;height:15px;vertical-align:text-bottom;margin-right:4px"></i> Agent 客户端接入方案 (本平台 API Config 自动生成)</span>
+            <span style="font-size:11px;color:var(--muted)">自动为 Codex、Antigravity、Claude Code 等 Agent 生成 config.toml 与配置，支持一键复制与下载</span>
+          </div>
+          <div class="card-body">
+            <!-- Agent Selection Tabs -->
+            <div class="uke-tabs" id="agentTabs">
+              <button class="uke-tab active" data-agent="codex" onclick="selectAgent('codex')"><i data-lucide="terminal"></i>Codex</button>
+              <button class="uke-tab" data-agent="antigravity" onclick="selectAgent('antigravity')"><i data-lucide="sparkles"></i>Antigravity</button>
+              <button class="uke-tab" data-agent="claude" onclick="selectAgent('claude')"><i data-lucide="sparkles"></i>Claude Code</button>
+              <button class="uke-tab" data-agent="opencode" onclick="selectAgent('opencode')"><i data-lucide="braces"></i>OpenCode</button>
+              <button class="uke-tab" data-agent="cursor" onclick="selectAgent('cursor')"><i data-lucide="braces"></i>Cursor / VS Code</button>
+            </div>
+
+            <!-- Parameters Selector -->
+            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px;background:rgba(0,0,0,0.02);border:1px solid var(--line);border-radius:var(--radius-sm);padding:14px;margin-bottom:16px">
+              <div>
+                <label class="form-label" style="font-size:12px">操作系统 (OS)</label>
+                <div class="uke-tabs" id="agentOsTabs" style="margin-bottom:0;border-bottom:0">
+                  <button class="uke-tab active" data-os="unix" onclick="selectAgentOs('unix')">macOS / Linux</button>
+                  <button class="uke-tab" data-os="win" onclick="selectAgentOs('win')">Windows</button>
+                </div>
+              </div>
+              <div>
+                <label class="form-label" style="font-size:12px">选择已有密钥 (API Key)</label>
+                <select class="form-input" id="agentKeySelect" onchange="onSelectExistingKey()">
+                  <option value="">-- 手动输入或使用占位符 --</option>
+                </select>
+              </div>
+              <div>
+                <label class="form-label" style="font-size:12px">当前填入的 API Key</label>
+                <input class="form-input" id="agentApiKey" placeholder="sk-..." oninput="renderAgentConfigs()">
+              </div>
+              <div>
+                <label class="form-label" style="font-size:12px">默认模型 (Model)</label>
+                <select class="form-input" id="agentModelSelect" onchange="renderAgentConfigs()">
+                  <option value="auto">auto (自动分流推荐)</option>
+                  <option value="gpt-6.1-sol">gpt-6.1-sol (最新 GPT-6.1 推理)</option>
+                  <option value="gpt-6-sol">gpt-6-sol (GPT-6 Sol)</option>
+                  <option value="gpt-6-reasoning">gpt-6-reasoning (GPT-6 深度推理)</option>
+                  <option value="gpt-6-astra">gpt-6-astra (GPT-6 Astra)</option>
+                  <option value="gpt-5.6-reasoning">gpt-5.6-reasoning (GPT-5.6 深度思考)</option>
+                  <option value="gpt-5.4">gpt-5.4 (默认旗舰模型)</option>
+                  <option value="gpt-5.2">gpt-5.2 (极速模型)</option>
+                  <option value="claude-sonnet-5">claude-sonnet-5 (Claude Sonnet 5)</option>
+                  <option value="claude-opus-5.5">claude-opus-5.5 (Claude Opus 5.5)</option>
+                  <option value="claude-3-5-sonnet-20241022">claude-3-5-sonnet-20241022 (Claude Code 原生)</option>
+                </select>
+              </div>
+              <div>
+                <label class="form-label" style="font-size:12px">网关 Base URL</label>
+                <input class="form-input" id="agentBaseUrl" placeholder="http://127.0.0.1:4141" oninput="renderAgentConfigs()">
+              </div>
+            </div>
+
+            <!-- Rendered Files & Commands -->
+            <div id="agentConfigFiles"></div>
+          </div>
+        </div>
+
+        <!-- Endpoints Table Card -->
+        <div class="card">
+          <div class="card-head">
+            <span class="card-title"><i data-lucide="list" style="width:15px;height:15px;vertical-align:text-bottom;margin-right:4px"></i> API 接口清单与调用状态</span>
+            <span style="font-size:11px;color:var(--muted)">支持一键复制 cURL 示例及查看接口规范</span>
+          </div>
+          <div style="overflow-x:auto">
+            <table class="table">
+              <thead>
+                <tr>
+                  <th>请求方式 & 路径</th>
+                  <th>接口名称</th>
+                  <th>协议分类</th>
+                  <th>权限策略</th>
+                  <th>服务状态</th>
+                  <th style="text-align:right">操作</th>
+                </tr>
+              </thead>
+              <tbody id="apiRows">
+                <tr><td colspan="6" class="empty">加载中...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
       <!-- Conversations -->
       <section id="page-conversations" style="display:none">
         <div class="page-head">
@@ -789,6 +958,32 @@ if (response.output_text) {
   </div>
 </div>
 
+<!-- API Detail Modal -->
+<div class="modal-overlay" id="apiDetailModal">
+  <div class="modal wide">
+    <div class="modal-head">
+      <div>
+        <h3 id="apiModalTitle">API 接口详情</h3>
+        <p class="subtitle" id="apiModalSub"></p>
+      </div>
+      <button class="modal-close" onclick="closeApiDetail()"><i data-lucide="x" style="width:15px;height:15px"></i></button>
+    </div>
+    <div style="margin-top:12px">
+      <div class="highlight-box">
+        <div class="highlight-box-title"><i data-lucide="terminal" style="width:14px;height:14px"></i> cURL 调用示例</div>
+        <p id="apiModalDesc" style="margin-bottom:8px"></p>
+        <div class="copy-field" style="margin-top:8px">
+          <textarea class="form-input" id="apiModalCurl" rows="7" readonly style="font-family:monospace;font-size:12px;white-space:pre"></textarea>
+          <button class="btn btn-sm" onclick="copyApiModalCurl()">复制</button>
+        </div>
+      </div>
+    </div>
+    <div class="modal-actions" style="margin-top:16px">
+      <button class="btn primary" onclick="closeApiDetail()">关闭</button>
+    </div>
+  </div>
+</div>
+
 <div class="notice" id="notice" style="display:none"></div>
 
 <script>
@@ -824,11 +1019,13 @@ async function safeCopy(text) {
 }
 
 const $=id=>document.getElementById(id);
-const pages={dashboard:'控制台',usage:'用量',accounts:'账号',apikeys:'API 密钥',conversations:'对话管理',proxies:'代理池',modeltest:'模型测试',logs:'系统日志',settings:'设置'};
+const pages={dashboard:'控制台',usage:'用量',accounts:'账号',apikeys:'API 密钥',apis:'API 管理',conversations:'对话管理',proxies:'代理池',modeltest:'模型测试',logs:'系统日志',settings:'设置'};
 const localeStorageKey='m365_locale';
 const localeSelectionKey='m365_locale_selected';
 const SUPPORTED_LOCALES=['en','zh-CN','zh-TW','ja','ko','es','fr','de','pt-BR','ru','ar'];
 const localeText={
+  'API Management': {'zh-CN':'API 管理','zh-TW':'API 管理','ja':'API 管理','ko':'API 관리','es':'Gestión de API','fr':'Gestion des API','de':'API-Verwaltung','pt-BR':'Gerenciamento de API','ru':'Управление API','ar':'إدارة API'},
+  'APIs': {'zh-CN':'API 管理','zh-TW':'API 管理','ja':'API 管理','ko':'API 관리','es':'API','fr':'API','de':'APIs','pt-BR':'APIs','ru':'API','ar':'واجهات API'},
   'm365_cloud_not_configured': {'zh-CN':'M365 云客户端未配置，请先通过 PKCE 授权添加一个 M365 账号。','zh-TW':'M365 雲客戶端未配置，請先通過 PKCE 授權新增一個 M365 帳號。','ja':'M365 クラウドクライアントが設定されていません。PKCE 認証で M365 アカウントを追加してください。','ko':'M365 클라우드 클라이언트가 구성되지 않았습니다. PKCE 인증으로 M365 계정을 추가하세요.','es':'Cliente en la nube de M365 no configurado. Agregue una cuenta M365 primero mediante autorización PKCE.','fr':'Client cloud M365 non configuré. Ajoutez d’abord un compte M365 via l’autorisation PKCE.','de':'M365-Cloud-Client nicht konfiguriert. Fügen Sie zuerst ein M365-Konto über PKCE-Autorisierung hinzu.','pt-BR':'Cliente cloud M365 não configurado. Adicione uma conta M365 primeiro via autorização PKCE.','ru':'Облачный клиент M365 не настроен. Сначала добавьте учетную запись M365 через авторизацию PKCE.','ar':'عميل سحابة M365 غير مهيأ. أضف حساب M365 أولاً عبر تفويض PKCE.'},
   'Administrator Login': {'zh-CN':'管理员登录','zh-TW':'管理員登入','ja':'管理者ログイン','ko':'관리자 로그인','es':'Inicio de sesión de administrador','fr':'Connexion administrateur','de':'Administrator-Anmeldung','pt-BR':'Login de administrador','ru':'Вход администратора','ar':'تسجيل دخول المسؤول'},
   'Password': {'zh-CN':'密码','zh-TW':'密碼','ja':'パスワード','ko':'비밀번호','es':'Contraseña','fr':'Mot de passe','de':'Passwort','pt-BR':'Senha','ru':'Пароль','ar':'كلمة المرور'},
@@ -1330,7 +1527,7 @@ function getInitialPage(){
 
 function showPage(p,updateUrl=true){
   if(!pages[p])p='dashboard';
-  ['dashboard','usage','accounts','apikeys','conversations','proxies','modeltest','logs','settings'].forEach(k=>{
+  ['dashboard','usage','accounts','apikeys','apis','conversations','proxies','modeltest','logs','settings'].forEach(k=>{
     const el=$('page-'+k);
     if(el) el.style.display=k===p?'block':'none';
     document.querySelectorAll('[data-page="'+k+'"]').forEach(btn=>btn.classList.toggle('active',k===p));
@@ -1351,6 +1548,7 @@ function showPage(p,updateUrl=true){
   else if(p==='usage')loadUsage();
   else if(p==='accounts')loadAccounts();
   else if(p==='apikeys')loadKeys();
+  else if(p==='apis')loadApis();
   else if(p==='conversations')loadConversations();
   else if(p==='proxies')loadProxies();
   else if(p==='modeltest')loadModelTest();
@@ -2094,6 +2292,7 @@ function renderUkeFiles(){
     const cfg=`model_provider = "OpenAI"
 model = "auto"
 review_model = "auto"
+preferred_auth_method = "apikey"
 
 [model_providers.OpenAI]
 name = "M365 Gateway"
@@ -2472,6 +2671,288 @@ async function modelTestAll(){
     await new Promise(r=>setTimeout(r,250));
   }
   showNotice('模型测试完成','success');
+}
+
+let currentEndpoints = [];
+let currentAgent = 'codex';
+let currentAgentOs = 'unix';
+let currentAgentFiles = {};
+
+function selectAgent(agent) {
+  currentAgent = agent;
+  document.querySelectorAll('#agentTabs .uke-tab').forEach(b => {
+    b.classList.toggle('active', b.dataset.agent === agent);
+  });
+  renderAgentConfigs();
+}
+
+function selectAgentOs(os) {
+  currentAgentOs = os;
+  document.querySelectorAll('#agentOsTabs .uke-tab').forEach(b => {
+    b.classList.toggle('active', b.dataset.os === os);
+  });
+  renderAgentConfigs();
+}
+
+function onSelectExistingKey() {
+  const sel = $('agentKeySelect');
+  if (sel && sel.value) {
+    $('agentApiKey').value = sel.value;
+  }
+  renderAgentConfigs();
+}
+
+function downloadConfigFile(filename, content) {
+  try {
+    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    showNotice(`已下载 ${filename}`, 'success');
+  } catch(e) {
+    showNotice('下载失败: ' + e.message, 'error');
+  }
+}
+
+function copyAgentFile(fileKey) {
+  const item = currentAgentFiles[fileKey];
+  if (item) safeCopy(item.content);
+}
+
+function downloadAgentFile(fileKey) {
+  const item = currentAgentFiles[fileKey];
+  if (item) downloadConfigFile(item.filename, item.content);
+}
+
+function agentFileCard(fileKey, filename, path, content, isScript=false) {
+  currentAgentFiles[fileKey] = { filename, content };
+  return `<div class="uke-file">
+    <div class="uke-file-head">
+      <div style="display:flex;align-items:center;gap:8px">
+        <span style="font-weight:700;color:var(--text)">${esc(filename)}</span>
+        <code>${esc(path)}</code>
+      </div>
+      <div style="display:flex;gap:6px">
+        <button class="btn btn-sm" onclick="copyAgentFile('${fileKey}')"><i data-lucide="copy" style="width:12px;height:12px"></i> 复制</button>
+        ${!isScript ? `<button class="btn btn-sm primary" onclick="downloadAgentFile('${fileKey}')"><i data-lucide="download" style="width:12px;height:12px"></i> 下载</button>` : ''}
+      </div>
+    </div>
+    <pre>${esc(content)}</pre>
+  </div>`;
+}
+
+function renderAgentConfigs() {
+  const container = $('agentConfigFiles');
+  if (!container) return;
+  currentAgentFiles = {};
+
+  let base = ($('agentBaseUrl')?.value || location.origin).trim().replace(/\/+$/, '');
+  const key = ($('agentApiKey')?.value || '').trim() || 'sk-m365-your-api-key';
+  const model = ($('agentModelSelect')?.value || 'auto').trim();
+  const isWin = currentAgentOs === 'win';
+
+  let html = '';
+
+  if (currentAgent === 'codex') {
+    const cfgPath = isWin ? '%USERPROFILE%\\.codex\\config.toml' : '~/.codex/config.toml';
+    const cfgContent = `model_provider = "OpenAI"
+model = "${model}"
+review_model = "${model}"
+preferred_auth_method = "apikey"
+
+[model_providers.OpenAI]
+name = "M365 Gateway"
+base_url = "${base}/v1"
+wire_api = "responses"
+requires_openai_auth = true
+
+[features]
+goals = true`;
+    html += agentFileCard('codex_config', 'config.toml', cfgPath, cfgContent);
+
+    const authPath = isWin ? '%USERPROFILE%\\.codex\\auth.json' : '~/.codex/auth.json';
+    const authContent = `{\n  "OPENAI_API_KEY": "${key}"\n}`;
+    html += agentFileCard('codex_auth', 'auth.json', authPath, authContent);
+
+    const envCmd = isWin ? `$env:OPENAI_API_KEY = "${key}"` : `export OPENAI_API_KEY="${key}"`;
+    html += agentFileCard('codex_env', '终端环境变量', isWin ? 'PowerShell' : 'Terminal / Bash / Zsh', envCmd, true);
+
+  } else if (currentAgent === 'antigravity') {
+    const tomlPath = isWin ? '%USERPROFILE%\\.gemini\\antigravity\\config.toml' : '~/.gemini/antigravity/config.toml';
+    const tomlContent = `# Antigravity Platform API Config (~/.gemini/antigravity/config.toml)
+default_provider = "openai"
+default_model = "${model}"
+
+[providers.openai]
+name = "M365 Copilot Gateway"
+base_url = "${base}/v1"
+api_key = "${key}"
+wire_protocol = "chat_completions"
+
+[settings]
+tool_planning_mode = "direct"
+stream = true
+temperature = 0.2`;
+    html += agentFileCard('antigravity_toml', 'config.toml', tomlPath, tomlContent);
+
+    const jsonPath = isWin ? '%USERPROFILE%\\.gemini\\antigravity-cli\\settings.json' : '~/.gemini/antigravity-cli/settings.json';
+    const jsonContent = `{\n  "apiProvider": "openai",\n  "openai": {\n    "baseURL": "${base}/v1",\n    "apiKey": "${key}"\n  },\n  "model": "${model}"\n}`;
+    html += agentFileCard('antigravity_json', 'settings.json', jsonPath, jsonContent);
+
+    const envCmd = isWin
+      ? `$env:OPENAI_BASE_URL = "${base}/v1"\n$env:OPENAI_API_KEY = "${key}"`
+      : `export OPENAI_BASE_URL="${base}/v1"\nexport OPENAI_API_KEY="${key}"`;
+    html += agentFileCard('antigravity_env', '终端环境变量', isWin ? 'PowerShell' : 'Terminal / Bash / Zsh', envCmd, true);
+
+  } else if (currentAgent === 'claude') {
+    const claudePath = isWin ? '%USERPROFILE%\\.claude\\settings.json' : '~/.claude/settings.json';
+    const claudeContent = `{\n  "env": {\n    "ANTHROPIC_BASE_URL": "${base}",\n    "ANTHROPIC_AUTH_TOKEN": "${key}",\n    "ANTHROPIC_MODEL": "${model}"\n  }\n}`;
+    html += agentFileCard('claude_settings', 'settings.json', claudePath, claudeContent);
+
+    const envCmd = isWin
+      ? `$env:ANTHROPIC_BASE_URL = "${base}"\n$env:ANTHROPIC_AUTH_TOKEN = "${key}"`
+      : `export ANTHROPIC_BASE_URL="${base}"\nexport ANTHROPIC_AUTH_TOKEN="${key}"`;
+    html += agentFileCard('claude_env', '终端环境变量', isWin ? 'PowerShell' : 'Terminal / Bash / Zsh', envCmd, true);
+
+  } else if (currentAgent === 'opencode') {
+    const opencodeContent = `{\n  "$schema": "https://opencode.ai/config.json",\n  "provider": {\n    "m365": {\n      "npm": "@ai-sdk/openai-compatible",\n      "name": "M365 Gateway",\n      "options": {\n        "baseURL": "${base}/v1",\n        "apiKey": "${key}"\n      },\n      "models": {\n        "${model}": {\n          "name": "M365 ${model}"\n        }\n      }\n    }\n  }\n}`;
+    html += agentFileCard('opencode_json', 'opencode.json', '项目根目录/opencode.json', opencodeContent);
+
+  } else if (currentAgent === 'cursor') {
+    const cursorContent = `{\n  "openai.baseURL": "${base}/v1",\n  "openai.apiKey": "${key}",\n  "openai.model": "${model}"\n}`;
+    html += agentFileCard('cursor_settings', 'settings.json', '.cursor/settings.json 或 .vscode/settings.json', cursorContent);
+  }
+
+  container.innerHTML = html;
+  try { lucide.createIcons({ scope: container }); } catch(e) {}
+}
+
+async function loadApis() {
+  const rows = $('apiRows');
+  if (rows) rows.innerHTML = `<tr><td colspan="6" class="empty">${translateText('Loading...')}</td></tr>`;
+  try {
+    const [d, keysData] = await Promise.all([
+      api('/api/admin/endpoints'),
+      api('/api/admin/keys').catch(() => ({ keys: [] })),
+    ]);
+    const cfg = d.config || {};
+    currentEndpoints = d.endpoints || [];
+
+    if ($('apiDefaultImageModel')) {
+      const curVal = cfg.defaultImageModel || 'gpt-image-2';
+      const sel = $('apiDefaultImageModel');
+      const models = cfg.availableImageModels || ['gpt-image-2', 'gpt-image-1', 'dall-e-3', 'flux-3', 'flux-4'];
+      sel.innerHTML = models.map(m => `<option value="${esc(m)}">${esc(m)}${m==='gpt-image-2'?' (推荐 · 默认高质量)':''}</option>`).join('');
+      sel.value = curVal;
+    }
+    if ($('apiEnableImagePublic')) $('apiEnableImagePublic').checked = cfg.enableImageApiPublic === true;
+    if ($('apiEnableImageApi')) $('apiEnableImageApi').checked = cfg.enableImageApi === true;
+    if ($('apiEnableModelsPublic')) $('apiEnableModelsPublic').checked = cfg.enableModelsApiPublic === true;
+    if ($('apiEnableChatPublic')) $('apiEnableChatPublic').checked = cfg.enableChatApiPublic === true;
+
+    // Populate Agent Config keys & base URL
+    if ($('agentBaseUrl') && !$('agentBaseUrl').value) {
+      $('agentBaseUrl').value = location.origin;
+    }
+    const keySel = $('agentKeySelect');
+    if (keySel) {
+      const curSelected = keySel.value;
+      const keys = keysData.keys || [];
+      keySel.innerHTML = '<option value="">-- 手动输入或使用占位符 --</option>' +
+        keys.map(k => `<option value="${esc(k.prefix)}...">${esc(k.name)} (${esc(k.prefix)}...)</option>`).join('');
+      if (curSelected) keySel.value = curSelected;
+    }
+    renderAgentConfigs();
+
+    if (!rows) return;
+    if (!currentEndpoints.length) {
+      rows.innerHTML = `<tr><td colspan="6" class="empty">暂无 API 接口数据</td></tr>`;
+      return;
+    }
+
+    rows.innerHTML = currentEndpoints.map(ep => {
+      const isGet = ep.method.toUpperCase().includes('GET');
+      const methodBadge = `<span style="display:inline-block;padding:2px 7px;border-radius:4px;font-size:11px;font-weight:700;letter-spacing:0.02em;background:${isGet?'rgba(52,199,89,0.12)':'rgba(0,113,227,0.12)'};color:${isGet?'var(--green)':'var(--accent)'}">${esc(ep.method)}</span>`;
+      const permBadge = ep.requiresAuth
+        ? `<span class="status" style="color:var(--muted);font-size:12px;display:inline-flex;align-items:center;gap:4px"><i style="background:var(--accent);width:6px;height:6px;border-radius:50%"></i> 需要 API Key</span>`
+        : `<span class="status online" style="font-size:12px;display:inline-flex;align-items:center;gap:4px"><i style="background:var(--green);width:6px;height:6px;border-radius:50%"></i> 公开访问 (免授权)</span>`;
+      const statusBadge = ep.enabled
+        ? `<span style="color:var(--green);font-weight:600;font-size:12px">已启用</span>`
+        : `<span style="color:var(--muted);font-size:12px">已停用</span>`;
+
+      return `<tr>
+        <td>
+          <div style="display:flex;align-items:center;gap:8px">
+            ${methodBadge}
+            <code style="font-size:12px;font-weight:600">${esc(ep.path)}</code>
+          </div>
+        </td>
+        <td>
+          <b>${esc(ep.name)}</b>
+          <div style="font-size:12px;color:var(--muted);margin-top:2px;max-width:320px;white-space:normal">${esc(ep.description)}</div>
+        </td>
+        <td><span style="background:var(--line);padding:2px 8px;border-radius:6px;font-size:11px;font-weight:600">${esc(ep.category)}</span></td>
+        <td>${permBadge}</td>
+        <td>${statusBadge}</td>
+        <td style="text-align:right;white-space:nowrap">
+          <button class="btn btn-sm" onclick="copyApiCurl('${esc(ep.id)}')"><i data-lucide="copy" style="width:12px;height:12px"></i> 复制 cURL</button>
+          <button class="btn btn-sm" onclick="showApiDetail('${esc(ep.id)}')"><i data-lucide="info" style="width:12px;height:12px"></i> 详情</button>
+        </td>
+      </tr>`;
+    }).join('');
+
+    try { lucide.createIcons({ scope: rows }); } catch(e) {}
+  } catch (e) {
+    if (rows) rows.innerHTML = `<tr><td colspan="6" class="empty" style="color:var(--red)">${esc(e.message)}</td></tr>`;
+    showNotice(e.message, 'error');
+  }
+}
+
+async function saveApiConfig() {
+  try {
+    const body = {
+      defaultImageModel: $('apiDefaultImageModel')?.value?.trim() || 'gpt-image-2',
+      enableImageApiPublic: $('apiEnableImagePublic')?.checked === true,
+      enableImageApi: $('apiEnableImageApi')?.checked === true,
+      enableModelsApiPublic: $('apiEnableModelsPublic')?.checked === true,
+      enableChatApiPublic: $('apiEnableChatPublic')?.checked === true,
+    };
+    await api('/api/admin/endpoints', { method: 'PUT', body: JSON.stringify(body) });
+    showNotice('API 权限与配置已更新并保存', 'success');
+    loadApis();
+  } catch (e) {
+    showNotice(e.message, 'error');
+  }
+}
+
+function copyApiCurl(id) {
+  const ep = currentEndpoints.find(x => x.id === id);
+  if (!ep || !ep.curlExample) return showNotice('未找到 cURL 示例', 'error');
+  safeCopy(ep.curlExample);
+}
+
+function showApiDetail(id) {
+  const ep = currentEndpoints.find(x => x.id === id);
+  if (!ep) return;
+  $('apiModalTitle').textContent = ep.name;
+  $('apiModalSub').textContent = ep.method + ' ' + ep.path;
+  $('apiModalDesc').textContent = ep.description;
+  $('apiModalCurl').value = ep.curlExample;
+  $('apiDetailModal').classList.add('open');
+  try { lucide.createIcons({ scope: $('apiDetailModal') }); } catch(e) {}
+}
+
+function closeApiDetail() {
+  $('apiDetailModal').classList.remove('open');
+}
+
+function copyApiModalCurl() {
+  safeCopy($('apiModalCurl').value);
 }
 
 async function loadSettings(){

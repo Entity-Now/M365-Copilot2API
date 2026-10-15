@@ -89,17 +89,11 @@ func (r responsesRequest) openAI() (oaiReq, error) {
 			typ, _ := m["type"].(string)
 			switch typ {
 			case "additional_tools":
-				// Codex delivers its tool declarations inside the input array as
-				// {"type":"additional_tools","role":"developer","tools":[...]} instead
-				// of the top-level tools field. Merge them into the declaration set
-				// processed below so ChatHub learns about the available tools.
-				if tl, ok := m["tools"].([]any); ok {
-					for _, rt := range tl {
-						if t, ok := rt.(map[string]any); ok {
-							extraTools = append(extraTools, t)
-						}
-					}
-				}
+				// Codex declares its tools inside the input array as
+				// {"type":"additional_tools","role":"developer","tools":[...]}
+				// rather than in the top-level tools field. Without this the
+				// model is never told what it can call.
+				extraTools = append(extraTools, flattenAdditionalTools(m["tools"])...)
 				continue
 			case "function_call_progress":
 				// Progress is deliberately not converted into an assistant/tool
@@ -155,28 +149,85 @@ func (r responsesRequest) openAI() (oaiReq, error) {
 	default:
 		return o, fmt.Errorf("input must be string or array")
 	}
+	allTools := append([]map[string]any(nil), r.Tools...)
 	if len(extraTools) > 0 {
-		r.Tools = append(extraTools, r.Tools...)
+		allTools = append(extraTools, allTools...)
 	}
-	for _, t := range r.Tools {
+	flatTools := flattenAdditionalTools(allTools)
+	hasCustomExec := false
+	for _, t := range flatTools {
 		typ, _ := t["type"].(string)
 		name, _ := t["name"].(string)
+		if typ == "custom" && name == "exec" {
+			hasCustomExec = true
+			break
+		}
+	}
+	for _, t := range flatTools {
+		typ, _ := t["type"].(string)
+		name, _ := t["name"].(string)
+		if hasCustomExec && !(typ == "custom" && name == "exec") {
+			continue
+		}
 		f := map[string]any{"name": t["name"], "description": t["description"], "parameters": t["parameters"]}
 		if typ == "custom" && name == "exec" {
-			return o, fmt.Errorf("unsupported_parameter: tools")
-		}
-		if typ != "function" {
+			// ChatHub accepts JSON function arguments while Codex exec accepts a
+			// grammar-constrained raw input string. Preserve the distinction in
+			// Tool.Type and bridge the input through a single string field.
+			f["parameters"] = map[string]any{"type": "object", "properties": map[string]any{"input": map[string]any{"type": "string"}}, "required": []string{"input"}, "additionalProperties": false}
+			hasCustomExec = true
+		} else if typ != "function" {
 			// Newer Codex clients declare non-function tools (local_shell,
 			// custom apply_patch, web_search, ...). The gateway executes only
 			// client-side function tools, so skip the rest instead of
 			// rejecting the whole request with 400.
-			log.Printf("[responses] skipping unsupported tool type %q (name=%q)", typ, name)
+			if typ != "web_search" && typ != "namespace" {
+				log.Printf("[responses] skipping unsupported tool type %q (name=%q)", typ, name)
+			}
 			continue
 		}
 		b, _ := json.Marshal(f)
 		o.Tools = append(o.Tools, chathub.Tool{Type: typ, Function: b})
 	}
+	if hasCustomExec {
+		o.Messages = append([]oaiMsg{{Role: "system", Content: customExecWorkspaceInstruction}}, o.Messages...)
+	}
 	return o, nil
+}
+
+const customExecWorkspaceInstruction = `You are operating through the caller's local OpenCode execution bridge. Never use, request, or mention Microsoft 365/Copilot native tools. The only permitted execution tool is the caller-provided custom exec tool. The executor already starts in the caller-selected project workspace. Use relative paths only; never guess, cd to, or write under /root, /workspace, /tmp, or any other absolute project path. Inspect pwd and ls before changes. Do not create files outside the current working directory. Never claim a file was created, modified, or verified until custom exec returns a successful result. After every execution, use custom exec to verify the result.`
+
+
+// flattenAdditionalTools normalises the tool list Codex sends inside an
+// additional_tools item. Codex groups its tools under a namespace entry such as
+// {"type":"namespace","name":"functions","tools":[...]}, so the leaf tools have
+// to be lifted out before the gateway can declare them upstream.
+func flattenAdditionalTools(list any) []map[string]any {
+	var items []any
+	switch v := list.(type) {
+	case []any:
+		items = v
+	case []map[string]any:
+		items = make([]any, len(v))
+		for i, m := range v {
+			items[i] = m
+		}
+	default:
+		return nil
+	}
+	var out []map[string]any
+	for _, item := range items {
+		t, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if typ, _ := t["type"].(string); typ == "namespace" {
+			out = append(out, flattenAdditionalTools(t["tools"])...)
+			continue
+		}
+		out = append(out, t)
+	}
+	return out
 }
 
 type anthropicMessage struct {

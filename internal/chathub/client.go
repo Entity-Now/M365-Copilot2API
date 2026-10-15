@@ -36,6 +36,8 @@ var ErrImageLimit = errors.New("upstream image generation daily limit reached")
 
 var ErrOffensiveContent = errors.New("upstream content policy flagged as offensive")
 
+var ErrFirstTokenTimeout = errors.New("upstream first text token timeout")
+
 var ErrMeteringThrottled = errors.New("upstream metering throttle: capability access denied")
 
 func checkMeteringError(mi any) error {
@@ -167,6 +169,12 @@ var contentPolicyPatterns = []string{
 	"i'm sorry, i can't respond",
 	"i'm sorry, i cannot respond",
 	"i apologize, i cannot",
+	"wasn't able to respond to that",
+	"wasn't able to respond",
+	"unable to respond to that",
+	"something else i can help with",
+	"抱歉，我无法回答这个问题",
+	"抱歉，我现在无法回答",
 	"system_directive_followed=false",
 }
 
@@ -222,11 +230,17 @@ func classifyTransportError(err error) string {
 	case strings.Contains(msg, "handshake"):
 		return "WS_HANDSHAKE"
 	case strings.Contains(msg, "i/o timeout") || strings.Contains(msg, "deadline exceeded") || strings.Contains(msg, "timeout") && strings.Contains(msg, "read"):
+		if strings.Contains(msg, "write") {
+			return "WS_WRITE_TIMEOUT"
+		}
 		return "WS_READ_TIMEOUT"
 	case strings.Contains(msg, "connection refused") || strings.Contains(msg, "connection reset") || strings.Contains(msg, "broken pipe") || strings.Contains(msg, "network is unreachable") || strings.Contains(msg, "connection was forcibly closed"):
 		return "TCP"
 	default:
 		if strings.Contains(msg, "timeout") {
+			if strings.Contains(msg, "write") {
+				return "WS_WRITE_TIMEOUT"
+			}
 			return "WS_READ_TIMEOUT"
 		}
 		return "TCP"
@@ -329,6 +343,7 @@ type Request struct {
 	Tone                  string
 	ConversationID        string
 	SessionID             string
+	FirstTokenTimeout     time.Duration
 	Attachments           []Attachment
 	Tools                 []Tool
 	ToolChoice            any
@@ -758,6 +773,13 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 		return Result{}, &DialError{Status: 0, Kind: classifyTransportError(err), cause: fmt.Errorf("chat send: %w", err)}
 	}
 	phase = PhasePayloadSent
+	var firstTokenTimer *time.Timer
+	var firstTokenTimeout <-chan time.Time
+	if req.FirstTokenTimeout > 0 {
+		firstTokenTimer = time.NewTimer(req.FirstTokenTimeout)
+		firstTokenTimeout = firstTokenTimer.C
+		defer firstTokenTimer.Stop()
+	}
 
 	var deltas []string
 	var streamed strings.Builder
@@ -772,6 +794,10 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 			log.Printf("[trace:emitDelta] len=%d streamed=%d preview=%q", len(d), streamed.Len()+len(d), truncate(d, 80))
 		}
 		if streamed.Len() == 0 {
+			if firstTokenTimer != nil {
+				firstTokenTimer.Stop()
+				firstTokenTimeout = nil
+			}
 			log.Printf("chathub timing first_delta_ms=%d len=%d", time.Since(payloadSentAt).Milliseconds(), len(d))
 			ts.FirstTokenReceived = time.Now().UTC().Format(time.RFC3339Nano)
 			phase = PhaseStreaming
@@ -929,6 +955,10 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 	for {
 		var read wsRead
 		select {
+		case <-firstTokenTimeout:
+			returnConn = false
+			_ = conn.Close()
+			return Result{}, ErrFirstTokenTimeout
 		case <-ctx.Done():
 			returnConn = false
 			_ = wsWrite(websocket.TextMessage, []byte(`{"arguments":[{}],"invocationId":"1","target":"stop","type":1}`+rs))

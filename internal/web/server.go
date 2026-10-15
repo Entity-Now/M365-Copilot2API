@@ -18,6 +18,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -201,6 +202,11 @@ type Server struct {
 	convCache            *conversationCache
 	cloudClients         *m365CloudClientManager
 	lastHealthyAccount   string
+	poolWarmMu           sync.Mutex
+	poolWarmRound        uint64
+	poolWarmSucceeded    map[string]uint64
+	poolWarmDials        uint64
+	poolWarmSkippedCool  uint64
 }
 
 const maxResponsesPerTenant = 256
@@ -277,7 +283,7 @@ func New() (*Server, error) {
 			maxConcurrentRequests = parsed
 		}
 	}
-	return &Server{
+	srv := &Server{
 		requestSlots:        make(chan struct{}, maxConcurrentRequests),
 		tokens:              store,
 		accountPool:         newAccountHealth(),
@@ -306,7 +312,9 @@ func New() (*Server, error) {
 		generatedImages:      map[string]generatedImage{},
 		convCache:            newConversationCache(),
 		cloudClients:         newM365CloudClientManager(),
-	}, nil
+	}
+	setGlobalCloudClientManager(srv.cloudClients)
+	return srv, nil
 }
 
 func init() { SetM365AuthStore(nil) }
@@ -335,7 +343,7 @@ func (s *Server) PreheatPool() {
 			continue
 		}
 		for i := 0; i < 2; i++ {
-			go func(a auth.AccountToken) {
+			go func(a auth.AccountToken, cl *chathub.Client) {
 				ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 				defer cancel()
 				reqID := uuid.NewString()
@@ -345,11 +353,173 @@ func (s *Server) PreheatPool() {
 				if err != nil {
 					return
 				}
-				s.chat.Pool.Warm(ctx, chathub.Account{AccessToken: a.AccessToken, OID: a.OID, TID: a.TID}, wsURL)
-			}(acc)
+				cl.Pool.Warm(ctx, chathub.Account{AccessToken: a.AccessToken, OID: a.OID, TID: a.TID}, wsURL)
+			}(acc, s.accountClient(acc.ID))
 		}
 	}
 }
+
+// keepPoolWarm re-warms the accounts most likely to serve the next requests,
+// in least-recently-warmed order, skipping cooled-down and picked-over ones.
+// Each account holds at most maxPoolPerKey*concurrency shed-load margin of
+// warmed sockets, but never more than it can actually use before the 2-minute
+// TTL expires.
+func (s *Server) keepPoolWarm() {
+	if s.chat == nil || s.chat.Pool == nil {
+		return
+	}
+	accounts := s.tokens.List()
+	if len(accounts) == 0 {
+		return
+	}
+	cands := make([]auth.AccountToken, 0, len(accounts))
+	now := time.Now()
+	s.poolWarmMu.Lock()
+	s.poolWarmRound++
+	s.poolWarmMu.Unlock()
+	cfg := s.settings.get()
+	for _, a := range accounts {
+		if a.OID == "" || a.TID == "" {
+			oid, tid := extractOIDTID(a.AccessToken)
+			a.OID, a.TID = oid, tid
+		}
+		// Skip accounts unavailable for scheduling, already cooling down, about
+		// to be cooled, or whose token is expired: warming them either cannot
+		// serve traffic or keeps hammering an upstream that just said back off.
+		if a.OID == "" || a.TID == "" ||
+			!s.tokens.ScheduleEnabled(a.ID) ||
+			!s.accountPool.Available(a.ID) ||
+			(!a.ExpiresAt.IsZero() && a.ExpiresAt.Before(now)) {
+			continue
+		}
+		if attempts, limited, _ := s.accountPool.QuotaDetail(a.ID); limited || attempts > 0 {
+			s.poolWarmMu.Lock()
+			s.poolWarmSkippedCool++
+			s.poolWarmMu.Unlock()
+			continue
+		}
+		client := s.accountClient(a.ID)
+		if client == nil || client.Pool == nil {
+			continue
+		}
+		cands = append(cands, a)
+	}
+	if len(cands) == 0 {
+		return
+	}
+	sort.Slice(cands, func(i, j int) bool {
+		return s.warmGeneration(cands[i].ID) < s.warmGeneration(cands[j].ID)
+	})
+	// Refill only the neediest accounts, capped so a cold start does not dump
+	// dozens of handshakes at once; the keeper runs every 90s and tops up again.
+	budget := 8
+	for _, acc := range cands {
+		if budget <= 0 {
+			break
+		}
+		need := s.poolRefillNeed(acc)
+		if need <= 0 {
+			continue
+		}
+		if need > budget {
+			need = budget
+		}
+		budget -= need
+		for i := 0; i < need; i++ {
+			go func(a auth.AccountToken, cl *chathub.Client) {
+				ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+				defer cancel()
+				wsURL, err := chathub.BuildWSURL(chathub.Account{AccessToken: a.AccessToken, OID: a.OID, TID: a.TID}, uuid.NewString(), uuid.NewString(), uuid.NewString(), cfg.LicenseType, cfg.Scenario)
+				if err != nil {
+					return
+				}
+				ok := cl.Pool.Warm(ctx, chathub.Account{AccessToken: a.AccessToken, OID: a.OID, TID: a.TID}, wsURL)
+				s.noteWarmResult(a.ID, ok)
+			}(acc, s.accountClient(acc.ID))
+		}
+	}
+}
+
+// warmGeneration returns how many keeper rounds have already refilled this
+// account, so keepPoolWarm always serves the stalest accounts first.
+func (s *Server) warmGeneration(accountID string) uint64 {
+	s.poolWarmMu.Lock()
+	defer s.poolWarmMu.Unlock()
+	if s.poolWarmSucceeded == nil {
+		s.poolWarmSucceeded = map[string]uint64{}
+	}
+	return s.poolWarmSucceeded[accountID]
+}
+
+// noteWarmResult records one keeper dial so the next round prefers accounts
+// that have not been warmed yet, and publishes keeper counters for the admin
+// dashboard.
+func (s *Server) noteWarmResult(accountID string, ok bool) {
+	if !ok || accountID == "" {
+		return
+	}
+	s.poolWarmMu.Lock()
+	if s.poolWarmSucceeded == nil {
+		s.poolWarmSucceeded = map[string]uint64{}
+	}
+	s.poolWarmSucceeded[accountID]++
+	s.poolWarmDials++
+	s.poolWarmMu.Unlock()
+}
+
+// PoolWarmStats snapshots the keeper counters for admin visibility.
+func (s *Server) PoolWarmStats() map[string]any {
+	s.poolWarmMu.Lock()
+	defer s.poolWarmMu.Unlock()
+	byAccount := make(map[string]uint64, len(s.poolWarmSucceeded))
+	for k, v := range s.poolWarmSucceeded {
+		byAccount[k] = v
+	}
+	return map[string]any{
+		"refills":       s.poolWarmDials,
+		"skipped_cool":  s.poolWarmSkippedCool,
+		"rounds":        s.poolWarmRound,
+		"by_account_id": byAccount,
+	}
+}
+
+// poolRefillNeed returns how many sockets this account still needs so that it
+// can serve in-flight plus queued demand from the pool instead of dialing.
+// It is intentionally conservative: at most maxPoolPerKey*concurrency shed-load
+// slots, and never more than the account can plausibly consume within one
+// 2-minute TTL.
+func (s *Server) poolRefillNeed(acc auth.AccountToken) int {
+	client := s.accountClient(acc.ID)
+	if client == nil || client.Pool == nil {
+		return 0
+	}
+	have := client.Pool.Idle(acc.OID, acc.TID)
+	want := chathub.MaxPoolPerKey
+	need := want - have
+	if need < 0 {
+		need = 0
+	}
+	return need
+}
+
+// StartPoolKeeper keeps a small set of pooled WebSocket connections warm so the
+// first request of a session does not pay a fresh dial. It stops when ctx is
+// cancelled during shutdown.
+func (s *Server) StartPoolKeeper(ctx context.Context) {
+	go func() {
+		t := time.NewTicker(90 * time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				s.keepPoolWarm()
+			}
+		}
+	}()
+}
+
 
 func (s *Server) InitM365CloudClient() {
 	accounts := s.tokens.List()
@@ -395,6 +565,8 @@ func (s *Server) Routes() http.Handler {
 	m.HandleFunc("/api/admin/models/test", s.adminModelTest)
 	m.HandleFunc("/api/admin/models/sync", s.adminModelSync)
 	m.HandleFunc("/api/admin/settings", s.adminSettings)
+	m.HandleFunc("/api/admin/endpoints", s.adminEndpoints)
+	m.HandleFunc("/api/metrics", s.adminMetrics)
 	m.HandleFunc("/api/admin/proxy-pool", s.proxyPool)
 	m.HandleFunc("/api/admin/deployments", s.deployments)
 	m.HandleFunc("/api/admin/deployment", s.deploymentAction)
@@ -439,8 +611,8 @@ func (s *Server) Routes() http.Handler {
 	m.HandleFunc("/api/plugins", s.plugins)
 	m.HandleFunc("/v1/models", s.openaiModels)
 	m.HandleFunc("/v1/chat/completions", s.openaiChat)
-	m.HandleFunc("/v1/responses", s.responsesDisabled)
-	m.HandleFunc("/responses", s.responsesDisabled)
+	m.HandleFunc("/v1/responses", s.responses)
+	m.HandleFunc("/responses", s.responses)
 	m.HandleFunc("/v1/mcp/sse", mcp.HandleSSE)
 	m.HandleFunc("/v1/mcp/message", mcp.HandleMessage)
 	m.HandleFunc("/v1/mcp/tools", mcp.HandleToolsList)
@@ -479,6 +651,10 @@ func (s *Server) adminMiddleware(next http.Handler) http.Handler {
 			return
 		}
 		if r.URL.Path == "/api/admin/login" || r.URL.Path == "/api/admin/session" || r.URL.Path == "/api/admin/change-password" || r.URL.Path == "/api/admin/logout" || r.URL.Path == "/api/auth/start" || r.URL.Path == "/api/auth/status" || r.URL.Path == "/api/auth/callback" || r.URL.Path == "/" || r.URL.Path == "/login" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if s.isPublicEndpoint(r.URL.Path) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -1427,7 +1603,7 @@ type responseFormat struct {
 
 func isImageModel(model string) bool {
 	switch strings.ToLower(strings.TrimSpace(model)) {
-	case "gpt-image-2", "image-2", "dall-e-3", "dall-e-2", "designer":
+	case "gpt-image-2", "image-2", "dall-e-3", "dall-e-2", "designer", "flux-3", "flux-4":
 		return true
 	default:
 		return false
@@ -1445,37 +1621,60 @@ func modelTone(model string) string {
 		return "Gpt_5_5_Chat"
 	case "think-deeper":
 		return "Gpt_5_5_Reasoning"
-	case "gpt-5.2":
+	case "gpt-5.2", "gpt-5.2-quick":
 		return "Gpt_5_2_Chat"
-	case "gpt-5.2-reasoning":
+	case "gpt-5.2-reasoning", "gpt-5.2-think-deeper":
 		return "Gpt_5_2_Reasoning"
-	case "gpt-5.3":
+	case "gpt-5.3", "gpt-5.3-quick":
 		return "Gpt_5_3_Chat"
-	case "gpt-5.4":
+	case "gpt-5.3-reasoning", "gpt-5.3-think-deeper":
+		return "Gpt_5_3_Reasoning"
+	case "gpt-5.4", "gpt-5.4-quick":
 		return "Gpt_5_4_Chat"
-	case "gpt-5.4-reasoning":
+	case "gpt-5.4-reasoning", "gpt-5.4-think-deeper":
 		return "Gpt_5_4_Reasoning"
-	case "gpt-5.5":
+	case "gpt-5.5", "gpt-5.5-quick":
 		return "Gpt_5_5_Chat"
-	case "gpt-5.5-reasoning":
+	case "gpt-5.5-reasoning", "gpt-5.5-think-deeper":
 		return "Gpt_5_5_Reasoning"
 	case "gpt-5.6", "gpt-5.6-quick":
 		return "Gpt_5_6_Chat"
-	case "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.6-reasoning", "gpt-5.6-think-deeper":
+	case "gpt-5.6-reasoning", "gpt-5.6-think-deeper", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna":
 		return "Gpt_5_6_Reasoning"
-	case "gpt-6", "gpt-6-sol", "gpt-6.0-sol", "gpt-6-reasoning", "gpt-6-think-deeper":
+	case "gpt-6", "gpt-6-reasoning", "gpt-6-think-deeper":
 		return "Gpt_6_Reasoning"
-	case "claude-opus", "claude-opus-5", "claude-opus-4.5":
-		return "Claude_Opus"
-	case "claude", "claude-sonnet", "claude-sonnet-4.5":
+	case "gpt-6-astra", "gpt6-astra":
+		return "Gpt_6_Astra"
+	case "gpt-6-sol", "gpt-6.0-sol", "gpt6sol", "gpt-6-sol-reasoning":
+		return "Gpt_6_Sol_Reasoning"
+	case "gpt-6-sol-chat":
+		return "Gpt_6_Sol_Chat"
+	case "gpt-6.1-sol", "gpt-6.1-sol-reasoning":
+		return "Gpt_61_Sol_Reasoning"
+	case "claude", "claude-sonnet", "claude-sonnet-4.5", "claude-sonnet-4.6", "claude-sonnet-5.5":
 		return "Claude_Sonnet"
+	case "claude-sonnet-5":
+		return "Claude_Sonnet_5"
 	case "claude-sonnet-reasoning", "claude-sonnet-think-deeper":
 		return "Claude_Sonnet_Reasoning"
-	case "gpt-5.4-quick":
-		return "Gpt_5_4_Chat"
-	case "gpt-5.3-think-deeper":
-		return "Gpt_5_3_Reasoning"
+	case "claude-opus", "claude-opus-4.5", "claude-opus-4.8", "claude-opus-5", "claude-opus-5.5":
+		return "Claude_Opus"
+	case "claude-fable":
+		return "Claude_Fable"
+	case "grok-4.5":
+		return "Grok_4_5"
+	case "grok-auto":
+		return "Grok_Auto"
+	case "grok-reasoning":
+		return "Grok_Reasoning"
+	case "muse-spark":
+		return "Muse_Spark"
+	case "critique":
+		return "Critique"
 	default:
+		if tone, ok := dynamicToneForModel(model); ok {
+			return tone
+		}
 		if strings.Contains(m, "opus") {
 			return "Claude_Opus"
 		}
@@ -1764,8 +1963,9 @@ func (s *Server) adminModelTest(w http.ResponseWriter, r *http.Request) {
 	var b struct {
 		Model     string `json:"model"`
 		AccountID string `json:"account_id"`
+		Prompt    string `json:"prompt"`
 	}
-	if json.NewDecoder(r.Body).Decode(&b) != nil || strings.TrimSpace(b.Model) == "" {
+	if json.NewDecoder(http.MaxBytesReader(w, r.Body, 64*1024)).Decode(&b) != nil || strings.TrimSpace(b.Model) == "" {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "bad json: model required")
 		return
 	}
@@ -1788,6 +1988,10 @@ func (s *Server) adminModelTest(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIError(w, http.StatusBadRequest, "model_not_found", toneErr.Error())
 		return
 	}
+	prompt := strings.TrimSpace(b.Prompt)
+	if prompt == "" {
+		prompt = `Say "OK" in one word.`
+	}
 	start := time.Now()
 	ctx, cancel := context.WithTimeout(r.Context(), time.Duration(s.settings.get().ChatTimeoutSeconds)*time.Second)
 	defer cancel()
@@ -1808,10 +2012,11 @@ func (s *Server) adminModelTest(w http.ResponseWriter, r *http.Request) {
 			licenseType = "Starter"
 		}
 	}
+	scenario, licenseType = effectiveScenarioAndLicense(b.Model, tone, scenario, licenseType)
 	res, err := s.accountClient(acc.ID).Chat(ctx, chathub.Account{AccessToken: acc.AccessToken, OID: acc.OID, TID: acc.TID}, chathub.Request{
-		Text:         `Say "OK" in one word.`,
-		Tone:         tone,
-		LicenseType:  licenseType,
+		Text:          prompt,
+		Tone:          tone,
+		LicenseType:   licenseType,
 		Scenario:      scenario,
 		FeatureFlags:  s.featureFlags(),
 		DisableMemory: true,
@@ -2009,7 +2214,8 @@ func buildAnswerRequest(answerPrompt, tone string, body oaiReq, ledger agentLedg
 	if isToolRefusal(answerPrompt) || isSandboxHallucination(answerPrompt) || strings.Contains(answerPrompt, `:\`) || strings.Contains(answerPrompt, "tool_calls") {
 		answerPrompt += "\nENVIRONMENT NOTICE: You are connected to a local workspace host. Do NOT assume a cloud sandbox, Python container, or /mnt/data. Do NOT claim tools are unavailable in this environment, and do NOT tell the user to manually update or copy-paste files. Directly answer or summarize the task results."
 	}
-	req := chathub.Request{Text: answerPrompt, Tone: tone, ConversationID: body.ConversationID, SessionID: body.SessionID, Attachments: body.Attachments, LicenseType: cfg.LicenseType, Scenario: cfg.Scenario, FeatureFlags: flags, Locale: locale.Locale, Market: locale.Market, TimeZone: locale.TimeZone, TimeZoneOffset: locale.TimeZoneOffset, DeviceOS: locale.DeviceOS, DisableMemory: disableMemory}
+	reqScenario, reqLicense := effectiveScenarioAndLicense(body.Model, tone, cfg.Scenario, cfg.LicenseType)
+	req := chathub.Request{Text: answerPrompt, Tone: tone, ConversationID: body.ConversationID, SessionID: body.SessionID, Attachments: body.Attachments, LicenseType: reqLicense, Scenario: reqScenario, FeatureFlags: flags, Locale: locale.Locale, Market: locale.Market, TimeZone: locale.TimeZone, TimeZoneOffset: locale.TimeZoneOffset, DeviceOS: locale.DeviceOS, DisableMemory: disableMemory}
 	// The audited HAR set does not contain a complete client-tool invocation
 	// lifecycle, stable call identifier, argument-delta contract, or tool-result
 	// continuation for the former native/API-plugin payload. Keep client tools
@@ -2246,6 +2452,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	}
 	planningMode := s.settings.get().ToolPlanningMode
 	toolCfg := s.settings.get()
+	toolCfg.Scenario, toolCfg.LicenseType = effectiveScenarioAndLicense(body.Model, tone, toolCfg.Scenario, toolCfg.LicenseType)
 
 	ctx, cancel := context.WithTimeout(r.Context(), time.Duration(s.settings.get().ChatTimeoutSeconds)*time.Second)
 	defer cancel()

@@ -88,9 +88,10 @@ func sessionHashPrefix(s string) string {
 }
 
 type pipeResponseWriter struct {
-	h      http.Header
-	w      *io.PipeWriter
-	status int
+	h       http.Header
+	w       *io.PipeWriter
+	status  int
+	errBody bytes.Buffer
 }
 
 func (p *pipeResponseWriter) Header() http.Header { return p.h }
@@ -102,6 +103,9 @@ func (p *pipeResponseWriter) WriteHeader(n int) {
 func (p *pipeResponseWriter) Write(b []byte) (int, error) {
 	if p.status == 0 {
 		p.status = 200
+	}
+	if p.status >= 400 {
+		p.errBody.Write(b)
 	}
 	return p.w.Write(b)
 }
@@ -232,11 +236,18 @@ func (s *Server) streamResponsesAdapter(w http.ResponseWriter, r *http.Request, 
 		if status == 0 {
 			status = http.StatusBadGateway
 		}
+		errMsg := "inner chat request failed"
+		if irw.errBody.Len() > 0 {
+			errMsg = strings.TrimSpace(irw.errBody.String())
+		} else if scanner.Err() != nil {
+			errMsg = fmt.Sprintf("stream scan error: %v", scanner.Err())
+		}
+		log.Printf("[responses] stream failed: model=%s status=%d err=%s", model, status, errMsg)
 		emit("response.failed", map[string]any{
 			"type": "response.failed",
 			"response": map[string]any{
 				"id": id, "object": "response", "status": "failed", "model": model,
-				"error": map[string]any{"code": status, "message": "inner chat request failed"},
+				"error": map[string]any{"code": status, "message": errMsg},
 			},
 		})
 		return
@@ -245,6 +256,7 @@ func (s *Server) streamResponsesAdapter(w http.ResponseWriter, r *http.Request, 
 		// Never leave a Responses stream after response.created without a
 		// terminal event: clients otherwise render this as a successful blank
 		// answer and may reuse an incomplete response on the next turn.
+		log.Printf("[responses] empty response: model=%s (ChatHub returned no text or tool call)", model)
 		emit("response.failed", map[string]any{
 			"type": "response.failed",
 			"response": map[string]any{

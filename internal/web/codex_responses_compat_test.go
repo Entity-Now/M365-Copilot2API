@@ -11,21 +11,23 @@ import (
 	"m365-copilot2api/internal/chathub"
 )
 
-func TestResponsesRoutesAreTemporarilyDisabled(t *testing.T) {
-	const rawKey = "responses-disabled-test-key"
+func TestResponsesRoutesAreActive(t *testing.T) {
+	const rawKey = "responses-active-test-key"
 	keys := newAPIKeyStore(filepath.Join(t.TempDir(), "api-keys.json"))
 	keys.Keys = []apiKeyRecord{{Hash: keyHash(rawKey)}}
 	s := &Server{apiKeys: keys}
 	for _, path := range []string{"/v1/responses", "/responses"} {
 		w := httptest.NewRecorder()
-		r := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"model":"gpt-5.5","input":"hello"}`))
+		// Send request with empty input list, which is processed by s.responses without upstream credentials
+		r := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"model":"gpt-5.5","input":[],"stream":true}`))
 		r.Header.Set("Authorization", "Bearer "+rawKey)
 		s.Routes().ServeHTTP(w, r)
-		if w.Code != http.StatusGone {
-			t.Fatalf("%s status=%d body=%s, want 410", path, w.Code, w.Body.String())
+		if w.Code == http.StatusGone {
+			t.Fatalf("%s still returned 410 Gone", path)
 		}
-		if !strings.Contains(w.Body.String(), `"code":"responses_disabled"`) {
-			t.Fatalf("%s body=%s, want responses_disabled", path, w.Body.String())
+		// Since stream: true with empty input fails downstream gracefully with response.failed event, check it called s.responses
+		if !strings.Contains(w.Body.String(), "response.created") && !strings.Contains(w.Body.String(), "response.failed") {
+			t.Fatalf("%s body=%s, expected responses stream events", path, w.Body.String())
 		}
 	}
 }

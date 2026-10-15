@@ -72,6 +72,15 @@ func (s *Server) imageGenerations(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIError(w, 400, "invalid_request_error", "n must be between 1 and 10")
 		return
 	}
+	defaultImgModel := "gpt-image-2"
+	if s.settings != nil {
+		if configured := strings.TrimSpace(s.settings.get().DefaultImageModel); configured != "" {
+			defaultImgModel = configured
+		}
+	}
+	if strings.TrimSpace(b.Model) == "" {
+		b.Model = defaultImgModel
+	}
 	format := strings.ToLower(strings.TrimSpace(b.ResponseFormat))
 	if format == "" {
 		format = "url"
@@ -254,15 +263,15 @@ func (s *Server) imageGenerations(w http.ResponseWriter, r *http.Request) {
 
 	s.usage.record(UsageRecord{
 		Time:         time.Now(),
-		APIKeyPrefix: extractAPIKey(r),
+		APIKeyPrefix: firstNonEmpty(extractAPIKey(r), "public"),
 		AccountEmail: acc.Email,
-		Model:        firstNonEmpty(b.Model, "gpt-image-2"),
+		Model:        b.Model,
 		Endpoint:     endpoint,
 		InputTokens:  EstimateTokens(prompt),
 		DurationMs:   time.Since(startedAt).Milliseconds(),
 		Status:       200,
 	})
-	jsonOut(w, map[string]any{"created": time.Now().Unix(), "data": data, "m365": map[string]any{"conversationId": res.ConversationID, "sessionId": res.SessionID, "images": images}})
+	jsonOut(w, map[string]any{"created": time.Now().Unix(), "data": data, "model": b.Model, "m365": map[string]any{"conversationId": res.ConversationID, "sessionId": res.SessionID, "images": images}})
 }
 
 func (s *Server) imageEdits(w http.ResponseWriter, r *http.Request) {

@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestModelTokenLimitsAreConsistent(t *testing.T) {
@@ -176,10 +177,19 @@ func TestReasoningEffortRouting(t *testing.T) {
 		{"claude-sonnet", "high", "Claude_Sonnet_Reasoning"},
 		{"gpt-5.5", "low", "Gpt_5_5_Chat"},
 		{"gpt-5.5", "medium", "Gpt_5_5_Reasoning"},
+		{"gpt-5.6", "low", "Gpt_5_6_Chat"},
+		{"gpt-5.6", "high", "Gpt_5_6_Reasoning"},
 		{"gpt-5.6-reasoning", "none", "Gpt_5_6_Reasoning"},
 		{"gpt-5.6-sol", "none", "Gpt_5_6_Reasoning"},
 		{"gpt-5.6-sol", "medium", "Gpt_5_6_Reasoning"},
-		{"gpt-5.6", "medium", "Gpt_5_6_Reasoning"},
+		{"gpt-6-sol", "none", "Gpt_6_Sol_Reasoning"},
+		{"gpt-6-sol", "high", "Gpt_6_Sol_Reasoning"},
+		{"gpt-6.1-sol", "none", "Gpt_61_Sol_Reasoning"},
+		{"gpt-6.1-sol", "high", "Gpt_61_Sol_Reasoning"},
+		{"gpt-6-reasoning", "none", "Gpt_6_Reasoning"},
+		{"claude-opus", "high", "Claude_Opus"},
+		{"claude-sonnet-5", "high", "Claude_Sonnet_5"},
+		{"claude-sonnet-5.5", "high", "Claude_Sonnet"},
 		{"gpt-image-2", "", "Magic"},
 		{"gpt-image-2", "none", "Magic"},
 		{"gpt-image-2", "medium", "Magic"},
@@ -197,6 +207,56 @@ func TestReasoningEffortRouting(t *testing.T) {
 	}
 	if _, err := reasoningTone("gpt-99-invented", "low"); err == nil || !strings.Contains(err.Error(), "unknown or unsupported chat model") {
 		t.Fatalf("unknown model error=%v", err)
+	}
+	if sc, lic := effectiveScenarioAndLicense("gpt-6-reasoning", "Gpt_6_Reasoning", "OfficeWebIncludedCopilot", "Starter"); sc != "OfficeWebPaidCopilot" || lic != "Premium" {
+		t.Fatalf("paid scenario upgrade failed: %s / %s", sc, lic)
+	}
+	if sc, lic := effectiveScenarioAndLicense("gpt-6.1-sol", "Gpt_61_Sol_Reasoning", "OfficeWebIncludedCopilot", "Starter"); sc != "OfficeWebIncludedCopilot" || lic != "Starter" {
+		t.Fatalf("included scenario must stay unchanged for gpt-6.1-sol: %s / %s", sc, lic)
+	}
+}
+
+func TestAutoDiscoveredTonesConvertToPublicModelsAndRoute(t *testing.T) {
+	dynamicMu.Lock()
+	origTones := dynamicTones
+	origAt := dynamicAt
+	dynamicTones = append(knownUpstreamTones(), "Gpt_62_Sol_Reasoning", "Gpt_7_Chat", "Gpt_7_Reasoning", "Claude_Sonnet_6")
+	dynamicAt = time.Now()
+	dynamicMu.Unlock()
+	defer func() {
+		dynamicMu.Lock()
+		dynamicTones = origTones
+		dynamicAt = origAt
+		dynamicMu.Unlock()
+	}()
+
+	specs := configuredModelSpecs(nil)
+	byID := map[string]modelSpec{}
+	for _, s := range specs {
+		byID[s.ID] = s
+	}
+	for _, wantID := range []string{"gpt-6.2-sol", "gpt-7", "gpt-7-reasoning", "claude-sonnet-6"} {
+		if _, ok := byID[wantID]; !ok {
+			t.Fatalf("expected auto-discovered public model %q in catalog, got %#v", wantID, byID)
+		}
+		if !isKnownPublicModel(wantID) {
+			t.Fatalf("isKnownPublicModel(%q) = false", wantID)
+		}
+	}
+	if byID["claude-sonnet-6"].Owner != "anthropic-via-microsoft-365" {
+		t.Fatalf("claude-sonnet-6 owner=%q", byID["claude-sonnet-6"].Owner)
+	}
+	if got, err := reasoningTone("gpt-6.2-sol", "medium"); err != nil || got != "Gpt_62_Sol_Reasoning" {
+		t.Fatalf("gpt-6.2-sol routed to %q, err=%v", got, err)
+	}
+	if got, err := reasoningTone("gpt-7", "low"); err != nil || got != "Gpt_7_Chat" {
+		t.Fatalf("gpt-7/low routed to %q, err=%v", got, err)
+	}
+	if got, err := reasoningTone("gpt-7", "high"); err != nil || got != "Gpt_7_Reasoning" {
+		t.Fatalf("gpt-7/high routed to %q, err=%v", got, err)
+	}
+	if got, err := reasoningTone("Gpt_62_Sol_Reasoning", "none"); err != nil || got != "Gpt_62_Sol_Reasoning" {
+		t.Fatalf("direct tone passthrough got %q, err=%v", got, err)
 	}
 }
 

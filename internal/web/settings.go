@@ -29,9 +29,24 @@ var publicModelID = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
 var configurableCodexModels = []string{
 	"gpt-5.2",
 	"gpt-5.4",
+	"gpt-5.4-mini",
 	"gpt-5.5",
+	"gpt-5.6",
 	"gpt-5.6-reasoning",
 	"gpt-5.6-sol",
+	"gpt-6-sol",
+	"gpt-6.1-sol",
+	"gpt-6-reasoning",
+	"gpt-6-astra",
+	"claude-sonnet",
+	"claude-sonnet-5",
+	"claude-sonnet-5.5",
+	"claude-opus",
+	"claude-opus-4.8",
+	"claude-opus-5.5",
+	"flux-3",
+	"flux-4",
+	"codex-auto-review",
 }
 
 type runtimeSettings struct {
@@ -39,38 +54,53 @@ type runtimeSettings struct {
 	MaxToolRounds              int            `json:"maxToolRounds"`
 	ContextWindow              int            `json:"contextWindow"`
 	MaxOutputTokens            int            `json:"maxOutputTokens"`
-	ChatTimeoutSeconds         int            `json:"chatTimeoutSeconds"`
-	ImageTimeoutSeconds        int            `json:"imageTimeoutSeconds"`
-	LogLevel                   string         `json:"logLevel"`
-	DebugLogPath               string         `json:"debugLogPath"`
-	ListenAddress              string         `json:"listenAddress"`
-	ConfigPath                 string         `json:"configPath"`
-	TokenCachePath             string         `json:"tokenCachePath"`
-	SessionCachePath           string         `json:"sessionCachePath"`
-	OutboundProxy              string         `json:"outboundProxy"`
-	ProxyPool                  []string       `json:"proxyPool,omitempty"`
-	ClientID                   string         `json:"clientId"`
-	Authority                  string         `json:"authority"`
-	RedirectURI                string         `json:"redirectUri"`
-	Scope                      string         `json:"scope"`
-	ModelMappings              []modelMapping `json:"modelMappings"`
-	ToolPlanningMode           string         `json:"toolPlanningMode"`
-	RateLimitCooldownSeconds   int            `json:"rateLimitCooldownSeconds"`
-	Scenario                   string         `json:"scenario"`
-	MaxConversationMessages    int            `json:"maxConversationMessages"`
-	LicenseType                string         `json:"licenseType"`
-	AccountConcurrencyLimit    int            `json:"accountConcurrencyLimit"`
-	EnableMemoryV2             bool           `json:"enableMemoryV2"`
-	EnableDeepWork             bool           `json:"enableDeepWork"`
-	EnableComputerUse          bool           `json:"enableComputerUse"`
-	EnableRealtimeVoice        bool           `json:"enableRealtimeVoice"`
-	EnableSystemPromptOverride bool           `json:"enableSystemPromptOverride"`
-	EnableImageAPI             bool           `json:"enableImageApi"`
-	EnableDesignerImageGen4o   bool           `json:"enableDesignerImageGen4o"`
-	EnableCodeCanvas           bool           `json:"enableCodeCanvas"`
-	EnableSydneyReconnect      bool           `json:"enableSydneyReconnect"`
-	EnableCompactToolRouter    bool           `json:"enableCompactToolRouter"`
-	EnableOnDemandToolSchema   bool           `json:"enableOnDemandToolSchema"`
+	ChatTimeoutSeconds                int            `json:"chatTimeoutSeconds"`
+	FirstTokenTimeoutSeconds          int            `json:"firstTokenTimeoutSeconds"`
+	ImageTimeoutSeconds               int            `json:"imageTimeoutSeconds"`
+	LogLevel                          string         `json:"logLevel"`
+	DebugLogPath                      string         `json:"debugLogPath"`
+	ListenAddress                     string         `json:"listenAddress"`
+	ConfigPath                        string         `json:"configPath"`
+	TokenCachePath                    string         `json:"tokenCachePath"`
+	SessionCachePath                  string         `json:"sessionCachePath"`
+	OutboundProxy                     string         `json:"outboundProxy"`
+	ProxyPool                         []string       `json:"proxyPool,omitempty"`
+	ClientID                          string         `json:"clientId"`
+	Authority                         string         `json:"authority"`
+	RedirectURI                       string         `json:"redirectUri"`
+	Scope                             string         `json:"scope"`
+	ModelMappings                     []modelMapping `json:"modelMappings"`
+	ToolPlanningMode                  string         `json:"toolPlanningMode"`
+	RateLimitCooldownSeconds          int            `json:"rateLimitCooldownSeconds"`
+	TransientThrottledCooldownSeconds int            `json:"transientThrottledCooldownSeconds"`
+	Scenario                          string         `json:"scenario"`
+	MaxConversationMessages           int            `json:"maxConversationMessages"`
+	LicenseType                       string         `json:"licenseType"`
+	AccountConcurrencyLimit           int            `json:"accountConcurrencyLimit"`
+	EnableMemoryV2                    bool           `json:"enableMemoryV2"`
+	EnableDeepWork                    bool           `json:"enableDeepWork"`
+	EnableComputerUse                 bool           `json:"enableComputerUse"`
+	EnableRealtimeVoice               bool           `json:"enableRealtimeVoice"`
+	EnableSystemPromptOverride        bool           `json:"enableSystemPromptOverride"`
+	EnableImageAPI                    bool           `json:"enableImageApi"`
+	EnableImageAPIPublic              bool           `json:"enableImageApiPublic"`
+	EnableChatAPIPublic               bool           `json:"enableChatApiPublic"`
+	EnableModelsAPIPublic             bool           `json:"enableModelsApiPublic"`
+	DefaultImageModel                 string         `json:"defaultImageModel"`
+	EnableDesignerImageGen4o          bool           `json:"enableDesignerImageGen4o"`
+	EnableCodeCanvas                  bool           `json:"enableCodeCanvas"`
+	EnableSydneyReconnect             bool           `json:"enableSydneyReconnect"`
+	EnableCompactToolRouter           bool           `json:"enableCompactToolRouter"`
+	EnableOnDemandToolSchema          bool           `json:"enableOnDemandToolSchema"`
+	AutoStart                         bool           `json:"autoStart"`
+}
+
+var availableImageModels = []string{
+	"gpt-image-2",
+	"gpt-image-1",
+	"dall-e-3",
+	"flux-3",
+	"flux-4",
 }
 
 type settingsStore struct {
@@ -90,14 +120,15 @@ func defaultRuntimeSettings() runtimeSettings {
 	return runtimeSettings{
 		MaxToolCallsPerTurn: envInt("M365_MAX_TOOL_CALLS_PER_TURN", 64), MaxToolRounds: envInt("M365_MAX_TOOL_ROUNDS", 512),
 		ContextWindow: envInt("M365_CONTEXT_WINDOW", 512000), MaxOutputTokens: envInt("M365_MAX_OUTPUT_TOKENS", 65536),
-		ChatTimeoutSeconds: envInt("M365_CHAT_TIMEOUT_SECONDS", 600), ImageTimeoutSeconds: envInt("M365_IMAGE_TIMEOUT_SECONDS", 300), LogLevel: firstNonEmptySetting(os.Getenv("M365_LOG_LEVEL"), "info"),
+		ChatTimeoutSeconds: envInt("M365_CHAT_TIMEOUT_SECONDS", 600), FirstTokenTimeoutSeconds: envInt("M365_FIRST_TOKEN_TIMEOUT_SECONDS", 40), ImageTimeoutSeconds: envInt("M365_IMAGE_TIMEOUT_SECONDS", 300), LogLevel: firstNonEmptySetting(os.Getenv("M365_LOG_LEVEL"), "info"),
 		DebugLogPath: os.Getenv("M365_DEBUG_LOG"), ListenAddress: os.Getenv("M365_LISTEN"), ConfigPath: os.Getenv("M365_CONFIG"),
 		TokenCachePath: os.Getenv("M365_TOKEN_CACHE"), SessionCachePath: os.Getenv("M365_SESSION_CACHE"), OutboundProxy: os.Getenv(outbound.EnvProxy), ClientID: os.Getenv("M365_CLIENT_ID"),
 		Authority: os.Getenv("M365_AUTHORITY"), RedirectURI: os.Getenv("M365_REDIRECT_URI"), Scope: os.Getenv("M365_SCOPE"),
-		ModelMappings:              append([]modelMapping(nil), defaultModelMappings...),
-		ToolPlanningMode:           toolPlanningMode(os.Getenv("M365_TOOL_PLANNING_MODE")),
-		RateLimitCooldownSeconds:   envInt("M365_RATE_LIMIT_COOLDOWN_SECONDS", 30),
-		Scenario:                   firstNonEmptySetting(os.Getenv("M365_SCENARIO"), "OfficeWebIncludedCopilot"),
+		ModelMappings:                     append([]modelMapping(nil), defaultModelMappings...),
+		ToolPlanningMode:                  toolPlanningMode(os.Getenv("M365_TOOL_PLANNING_MODE")),
+		RateLimitCooldownSeconds:          envInt("M365_RATE_LIMIT_COOLDOWN_SECONDS", 30),
+		TransientThrottledCooldownSeconds: envInt("M365_TRANSIENT_THROTTLED_COOLDOWN_SECONDS", 15),
+		Scenario:                          firstNonEmptySetting(os.Getenv("M365_SCENARIO"), "OfficeWebIncludedCopilot"),
 		MaxConversationMessages:    envInt("M365_MAX_CONVERSATION_MESSAGES", 10000),
 		LicenseType:                firstNonEmptySetting(os.Getenv("M365_LICENSE_TYPE"), "Starter"),
 		AccountConcurrencyLimit:    envInt("M365_ACCOUNT_CONCURRENCY_LIMIT", 16),
@@ -107,6 +138,10 @@ func defaultRuntimeSettings() runtimeSettings {
 		EnableRealtimeVoice:        os.Getenv("M365_ENABLE_REALTIME_VOICE") == "true",
 		EnableSystemPromptOverride: os.Getenv("M365_ENABLE_SYSTEM_PROMPT_OVERRIDE") == "true",
 		EnableImageAPI:             os.Getenv("M365_ENABLE_IMAGE_API") == "true",
+		EnableImageAPIPublic:       os.Getenv("M365_ENABLE_IMAGE_API_PUBLIC") == "true",
+		EnableChatAPIPublic:        os.Getenv("M365_ENABLE_CHAT_API_PUBLIC") == "true",
+		EnableModelsAPIPublic:      os.Getenv("M365_ENABLE_MODELS_API_PUBLIC") == "true",
+		DefaultImageModel:          firstNonEmptySetting(os.Getenv("M365_DEFAULT_IMAGE_MODEL"), "gpt-image-2"),
 		EnableDesignerImageGen4o:   os.Getenv("M365_ENABLE_DESIGNER_IMAGE_GEN_4O") == "true",
 		EnableCodeCanvas:           os.Getenv("M365_ENABLE_CODE_CANVAS") == "true",
 		EnableSydneyReconnect:      os.Getenv("M365_ENABLE_SYDNEY_RECONNECT") == "true",
@@ -161,6 +196,9 @@ func validateSettings(v runtimeSettings) error {
 	if v.ChatTimeoutSeconds < 5 || v.ChatTimeoutSeconds > 3600 {
 		return fmt.Errorf("聊天超时必须为 5-3600 秒")
 	}
+	if v.FirstTokenTimeoutSeconds < 15 || v.FirstTokenTimeoutSeconds > 600 {
+		return fmt.Errorf("首字超时必须为 15-600 秒")
+	}
 	if v.ImageTimeoutSeconds < 5 || v.ImageTimeoutSeconds > 3600 {
 		return fmt.Errorf("图片超时必须为 5-3600 秒")
 	}
@@ -199,6 +237,9 @@ func validateSettings(v runtimeSettings) error {
 	if v.RateLimitCooldownSeconds < 5 || v.RateLimitCooldownSeconds > 3600 {
 		return fmt.Errorf("限流冷却时间必须为 5-3600 秒")
 	}
+	if v.TransientThrottledCooldownSeconds < 5 || v.TransientThrottledCooldownSeconds > 600 {
+		return fmt.Errorf("瞬时限流冷却时间必须为 5-600 秒")
+	}
 	if v.MaxConversationMessages < 1 || v.MaxConversationMessages > 10000 {
 		return fmt.Errorf("对话消息上限必须为 1-10000")
 	}
@@ -218,6 +259,9 @@ func validateSettings(v runtimeSettings) error {
 	}
 	if !isValidToolPlanningMode(v.ToolPlanningMode) {
 		return fmt.Errorf("toolPlanningMode 必须为 direct, router 或 router_slim")
+	}
+	if strings.TrimSpace(v.DefaultImageModel) != "" && !publicModelID.MatchString(strings.TrimSpace(v.DefaultImageModel)) {
+		return fmt.Errorf("默认生图模型只能包含字母、数字、点、下划线或连字符，且长度为 1-128")
 	}
 	return nil
 }
@@ -241,7 +285,7 @@ func (s *settingsStore) save(v runtimeSettings) error {
 func (s *Server) adminSettings(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		jsonOut(w, map[string]any{"settings": s.settings.get(), "codexModels": configurableCodexModels, "upstreamTones": knownUpstreamTones(), "restartRequiredFields": []string{"listenAddress", "configPath", "tokenCachePath", "sessionCachePath", "outboundProxy", "proxyPool", "clientId", "authority", "redirectUri", "scope", "debugLogPath"}})
+		jsonOut(w, map[string]any{"settings": s.settings.get(), "codexModels": configurableCodexModels, "availableImageModels": availableImageModels, "upstreamTones": liveUpstreamTones(), "autoStartSupported": autoStartSupported(), "autoStart": autoStartEnabled(), "restartRequiredFields": []string{"listenAddress", "configPath", "tokenCachePath", "sessionCachePath", "outboundProxy", "proxyPool", "clientId", "authority", "redirectUri", "scope", "debugLogPath"}})
 	case http.MethodPut:
 		// 前端可能只修改一个字段（如监听地址），其余字段以零值提交。
 		// 逐字段合并到当前设置再校验，避免"改一个字段弄丢其他配置"。
@@ -257,6 +301,10 @@ func (s *Server) adminSettings(w http.ResponseWriter, r *http.Request) {
 			writeOpenAIError(w, 400, "invalid_request_error", "bad json")
 			return
 		}
+		// Auto-start is a machine-level toggle, not a persisted runtime
+		// setting; apply it directly and strip it from the settings payload.
+		autoStartRequested, hasAutoStart := patch["autoStart"].(bool)
+		delete(patch, "autoStart")
 		for k, v := range patch {
 			merged[k] = v
 		}
@@ -274,7 +322,16 @@ func (s *Server) adminSettings(w http.ResponseWriter, r *http.Request) {
 			writeOpenAIError(w, 400, "invalid_request_error", e.Error())
 			return
 		}
-		jsonOut(w, map[string]any{"ok": true, "settings": v})
+		autoStartApplied := false
+		var autoStartErr string
+		if hasAutoStart && autoStartSupported() {
+			if e := setAutoStart(autoStartRequested); e != nil {
+				autoStartErr = e.Error()
+			} else {
+				autoStartApplied = autoStartRequested
+			}
+		}
+		jsonOut(w, map[string]any{"ok": true, "settings": v, "autoStart": autoStartEnabled(), "autoStartApplied": autoStartApplied, "autoStartError": autoStartErr})
 	default:
 		writeOpenAIError(w, 405, "invalid_request_error", "method not allowed")
 	}
