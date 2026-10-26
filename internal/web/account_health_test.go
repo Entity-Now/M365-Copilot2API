@@ -675,3 +675,77 @@ func TestGlobalCooldownMarksRemainingAllowanceSnapshotStale(t *testing.T) {
 		t.Fatal("global cooldown account must be unavailable")
 	}
 }
+
+func TestCooldownDurationsCappedAt10Minutes(t *testing.T) {
+	// CategoryQuota429 capped at 10m
+	if cd := CooldownForCategory(CategoryQuota429, 3600, 1); cd != 10*time.Minute {
+		t.Fatalf("quota429 retryAfter 3600: got %v, want 10m", cd)
+	}
+	if cd := CooldownForCategory(CategoryQuota429, 0, 10); cd != 10*time.Minute {
+		t.Fatalf("quota429 attempt 10: got %v, want 10m", cd)
+	}
+
+	// InsufficientTokens should be 10m, not 24h
+	if cd := CooldownForCategory(CategoryInsufficientTokens, 0, 1); cd != 10*time.Minute {
+		t.Fatalf("insufficientTokens: got %v, want 10m", cd)
+	}
+
+	// UserThrottled should be 10m, not 1h
+	if cd := CooldownForCategory(CategoryUserThrottled, 0, 1); cd != 10*time.Minute {
+		t.Fatalf("userThrottled: got %v, want 10m", cd)
+	}
+
+	// ImageLimited should be 10m, not 24h
+	h := newAccountHealth()
+	const id = "img-acct"
+	h.MarkImageLimited(id)
+	until, ok := h.CooldownUntil(id)
+	if !ok {
+		t.Fatal("image limited must set cooldown")
+	}
+	diff := time.Until(until)
+	if diff > 10*time.Minute || diff < 9*time.Minute {
+		t.Fatalf("image limited cooldown: %v, want ~10m", diff)
+	}
+}
+
+func TestResolveAccountAllowsHalfOpenProbe(t *testing.T) {
+	store := testAccountFiles(t)
+	s := &Server{tokens: store, accountPool: newAccountHealth(), accountConcurrency: newAccountConcurrency()}
+
+	// Mark all accounts with 429
+	for _, id := range []string{"u-1", "u-2", "u-3"} {
+		s.accountPool.MarkFailure(id, &UpstreamHTTPError{Status: 429}, time.Minute)
+	}
+
+	// While cooling down, resolveAccount must fail
+	if _, err := s.resolveAccount(""); err == nil {
+		t.Fatal("resolveAccount must fail while accounts are cooling down")
+	}
+
+	// Simulate cooldown expiry for u-1
+	s.accountPool.mu.Lock()
+	s.accountPool.cooldown["u-1"] = time.Now().Add(-time.Second)
+	s.accountPool.mu.Unlock()
+
+	// Now resolveAccount should succeed by acquiring the half-open probe on u-1
+	acc, err := s.resolveAccount("")
+	if err != nil {
+		t.Fatalf("resolveAccount should acquire half-open probe after cooldown expires, got err: %v", err)
+	}
+	if acc.ID != "u-1" {
+		t.Fatalf("expected u-1 to be probed, got: %s", acc.ID)
+	}
+
+	// A second concurrent probe before success must fail because probe is inflight
+	if _, err := s.resolveAccount(""); err == nil {
+		t.Fatal("concurrent resolveAccount must not allow second probe on same account")
+	}
+
+	// Mark probe success -> account is fully healthy
+	s.accountPool.MarkSuccess("u-1")
+	if !s.accountPool.Available("u-1") {
+		t.Fatal("account u-1 must be fully available after MarkSuccess")
+	}
+}
+

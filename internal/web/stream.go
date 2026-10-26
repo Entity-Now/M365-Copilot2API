@@ -260,6 +260,6 @@ func applyMeteringCooldown(pool *accountHealth, accountID string, meterError str
 		log.Printf("[metering] account=%s imageGenCooldownUntil=next_midnight_utc", accountID)
 	case "ImageGenSystemCapacityThrottled":
 		pool.MarkImageGenSystemThrottled(accountID)
-		log.Printf("[metering] account=%s imageGenSystemCooldown=30m", accountID)
+		log.Printf("[metering] account=%s imageGenSystemCooldown=10m", accountID)
 	}
 }

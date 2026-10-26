@@ -1376,7 +1376,7 @@ func (s *Server) resolveAccount(accountID string) (auth.AccountToken, error) {
 		s.mu.Lock()
 		preferred := s.lastHealthyAccount
 		s.mu.Unlock()
-		if preferred != "" && s.accountAvailable(preferred) {
+		if preferred != "" && s.accountAcquire(preferred) {
 			if acc, err := s.tokens.EnsureValid(preferred); err == nil {
 				accountID = preferred
 				return acc, nil
@@ -1390,14 +1390,14 @@ func (s *Server) resolveAccount(accountID string) (auth.AccountToken, error) {
 			return auth.AccountToken{}, fmt.Errorf("no accounts; login first")
 		}
 		accountID = acc.ID
-		selected := s.accountAvailable(accountID)
+		selected := s.accountAcquire(accountID)
 		for i, count := 0, len(s.tokens.List()); !selected && i < count; i++ {
 			acc, ok = s.tokens.Next()
 			if !ok {
 				break
 			}
 			accountID = acc.ID
-			selected = s.accountAvailable(accountID)
+			selected = s.accountAcquire(accountID)
 		}
 		if !s.tokens.ScheduleEnabled(accountID) {
 			return auth.AccountToken{}, fmt.Errorf("no accounts enabled for scheduling")
@@ -1447,7 +1447,7 @@ func (s *Server) resolveBoundAccount(accountIDs []string, accountID string) (aut
 		if !ok {
 			break
 		}
-		if _, ok := allowed[acc.ID]; !ok || !s.tokens.ScheduleEnabled(acc.ID) || !s.accountAvailable(acc.ID) {
+		if _, ok := allowed[acc.ID]; !ok || !s.tokens.ScheduleEnabled(acc.ID) || !s.accountAcquire(acc.ID) {
 			continue
 		}
 		result, err := s.tokens.EnsureValid(acc.ID)
@@ -1485,7 +1485,7 @@ func (s *Server) nextHealthyAccount(avoidID string, accountIDs []string) (auth.A
 				continue
 			}
 		}
-		if !s.tokens.ScheduleEnabled(acc.ID) || !s.accountAvailable(acc.ID) {
+		if !s.tokens.ScheduleEnabled(acc.ID) || !s.accountAcquire(acc.ID) {
 			continue
 		}
 		result, err := s.tokens.EnsureValid(acc.ID)
@@ -1523,13 +1523,16 @@ func (s *Server) resolveImageAccount(accountIDs []string, accountID string) (aut
 				continue
 			}
 		}
-		if s.accountAvailable(acc.ID) && (s.accountPool == nil || s.accountPool.ImageGenAvailable(acc.ID)) {
+		if s.accountAcquire(acc.ID) && (s.accountPool == nil || s.accountPool.ImageGenAvailable(acc.ID)) {
 			result, err := s.tokens.EnsureValid(acc.ID)
 			if err == nil {
 				s.mu.Lock()
 				s.lastHealthyAccount = acc.ID
 				s.mu.Unlock()
 				return result, nil
+			}
+			if s.accountPool != nil {
+				s.accountPool.ReleaseProbe(acc.ID)
 			}
 		}
 	}
@@ -1556,7 +1559,7 @@ func (s *Server) nextHealthyImageAccount(avoidID string, accountIDs []string) (a
 				continue
 			}
 		}
-		if !s.tokens.ScheduleEnabled(acc.ID) || !s.accountAvailable(acc.ID) || (s.accountPool != nil && !s.accountPool.ImageGenAvailable(acc.ID)) {
+		if !s.tokens.ScheduleEnabled(acc.ID) || !s.accountAcquire(acc.ID) || (s.accountPool != nil && !s.accountPool.ImageGenAvailable(acc.ID)) {
 			continue
 		}
 		result, err := s.tokens.EnsureValid(acc.ID)
@@ -1970,6 +1973,24 @@ func (s *Server) adminModelTest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	acc, err := s.resolveAccount(b.AccountID)
+	if err != nil && b.AccountID == "" && s.tokens != nil {
+		list := s.tokens.List()
+		for _, candidate := range list {
+			if s.tokens.ScheduleEnabled(candidate.ID) {
+				if validAcc, validErr := s.tokens.EnsureValid(candidate.ID); validErr == nil {
+					acc = validAcc
+					err = nil
+					break
+				}
+			}
+		}
+		if err != nil && len(list) > 0 {
+			if validAcc, validErr := s.tokens.EnsureValid(list[0].ID); validErr == nil {
+				acc = validAcc
+				err = nil
+			}
+		}
+	}
 	if err != nil {
 		writeUpstreamError(w, err)
 		return

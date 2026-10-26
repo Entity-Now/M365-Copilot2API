@@ -288,8 +288,8 @@ func CooldownForCategory(cat ErrorCategory, retryAfter int, attempt int) time.Du
 	case CategoryQuota429:
 		if retryAfter > 0 {
 			d := time.Duration(retryAfter) * time.Second
-			if d > 30*time.Minute {
-				d = 30 * time.Minute
+			if d > 10*time.Minute {
+				d = 10 * time.Minute
 			}
 			return d
 		}
@@ -300,8 +300,8 @@ func CooldownForCategory(cat ErrorCategory, retryAfter int, attempt int) time.Du
 			attempt = 7
 		}
 		d := 30 * time.Second * time.Duration(1<<(attempt-1))
-		if d > 30*time.Minute || d <= 0 {
-			d = 30 * time.Minute
+		if d > 10*time.Minute || d <= 0 {
+			d = 10 * time.Minute
 		}
 		return d
 	case CategoryOverload503:
@@ -313,9 +313,9 @@ func CooldownForCategory(cat ErrorCategory, retryAfter int, attempt int) time.Du
 	case CategoryUserBanned:
 		return 365 * 24 * time.Hour
 	case CategoryUserThrottled:
-		return 1 * time.Hour
+		return 10 * time.Minute
 	case CategoryInsufficientTokens:
-		return 24 * time.Hour
+		return 10 * time.Minute
 	case CategoryDesignerDisabled:
 		return 0
 	case CategoryRetryable422:
@@ -535,6 +535,18 @@ func (h *accountHealth) cleanupExpiredCooldownLocked(accountID string) {
 	}
 }
 
+// InCooldown reports whether the account is actively in a cooldown window.
+func (h *accountHealth) InCooldown(accountID string) bool {
+	if h == nil || accountID == "" {
+		return false
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.cleanupExpiredCooldownLocked(accountID)
+	until, ok := h.cooldown[accountID]
+	return ok && time.Now().Before(until)
+}
+
 func (h *accountHealth) MarkCall(accountID string) {
 	if h == nil || accountID == "" {
 		return
@@ -572,8 +584,8 @@ func (h *accountHealth) MarkImageLimited(accountID string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.imageLimited[accountID] = true
-	h.imageLimitUntil[accountID] = time.Now().Add(24 * time.Hour)
-	h.cooldown[accountID] = time.Now().Add(24 * time.Hour)
+	h.imageLimitUntil[accountID] = time.Now().Add(10 * time.Minute)
+	h.cooldown[accountID] = time.Now().Add(10 * time.Minute)
 }
 
 func (h *accountHealth) ImageLimited(accountID string) bool {
@@ -585,7 +597,6 @@ func (h *accountHealth) ImageLimited(accountID string) bool {
 	if h.imageLimited[accountID] {
 		if until, ok := h.imageLimitUntil[accountID]; ok && time.Now().After(until) {
 			delete(h.imageLimited, accountID)
-			delete(h.imageLimitUntil, accountID)
 			delete(h.imageLimitUntil, accountID)
 		}
 	}
@@ -610,7 +621,7 @@ func (h *accountHealth) MarkImageGenSystemThrottled(accountID string) {
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.imageGenSystemCooldown[accountID] = time.Now().Add(30 * time.Minute)
+	h.imageGenSystemCooldown[accountID] = time.Now().Add(10 * time.Minute)
 }
 
 func (h *accountHealth) ImageGenAvailable(accountID string) bool {
@@ -790,7 +801,7 @@ func (h *accountHealth) MarkFailure(accountID string, err error, window time.Dur
 		h.limited[accountID] = true
 		if errors.Is(err, chathub.ErrMeteringThrottled) && RetryAfterSeconds(err) == 0 {
 			h.quotaAttempts[accountID] = 0
-			h.cooldown[accountID] = time.Now().Add(15 * time.Minute)
+			h.cooldown[accountID] = time.Now().Add(10 * time.Minute)
 			return
 		}
 		attempt := h.quotaAttempts[accountID] + 1
